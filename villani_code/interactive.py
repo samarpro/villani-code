@@ -76,6 +76,7 @@ class InteractiveShell:
         self._files_written_recent: list[str] = []
         self._max_recent_files = 5
         self._tool_calls: dict[str, tuple[str, dict[str, Any]]] = {}
+        self._tool_io: dict[str, dict[str, list[str]]] = {}
         self.status_controller = StatusController(fps=10.0, render_to_stdout=True)
         self.runner.print_stream = False
         self.runner.approval_callback = self._approval_prompt
@@ -322,20 +323,6 @@ class InteractiveShell:
             return self._path_from_unified_diff(str(payload.get("unified_diff", "")))
         return ""
 
-    def _emit_tool_file_summary(self, tool_name: str) -> None:
-        if tool_name not in {"Read", "Write", "Patch"}:
-            return
-        reads = len(self._files_read_recent)
-        writes = len(self._files_written_recent)
-        if reads == 0 and writes == 0:
-            return
-        parts = [f"Files: read {reads}, wrote {writes}"]
-        if self._files_read_recent:
-            parts.append(f"last read: {', '.join(self._files_read_recent[-2:])}")
-        if self._files_written_recent:
-            parts.append(f"last wrote: {', '.join(self._files_written_recent[-2:])}")
-        self._emit_activity(" | ".join(parts))
-
     def _run_bash_line(self, command: str) -> None:
         self.task_manager.record_event("ToolStart", command)
         self.status_controller.start_waiting("Using tool: bash", self._summarize_command(command))
@@ -531,18 +518,31 @@ class InteractiveShell:
             tool_name = str(event.get("name", ""))
             tool_input = event.get("input", {}) if isinstance(event.get("input"), dict) else {}
             tool_use_id = str(event.get("tool_use_id", ""))
+            tool_io_stats = {
+                "read_attempted": [],
+                "read_ok": [],
+                "write_intent": [],
+                "write_ok": [],
+                "patch_intent": [],
+                "patch_ok": [],
+            }
             if tool_use_id:
                 self._tool_calls[tool_use_id] = (tool_name, tool_input)
+                self._tool_io[tool_use_id] = tool_io_stats
             detail = self._detail_for_tool(tool_name, tool_input)
-            msg = f"▶ Using tool: {tool_name}" + (f" — {detail}" if detail else "")
-            self._emit_activity(msg)
             path = self._path_for_tool(tool_name, tool_input)
             if tool_name == "Read" and path:
                 self._note_file_read(path)
+                tool_io_stats["read_attempted"].append(path)
             elif tool_name == "Write" and path:
-                self._emit_activity(f"✍️ Will write: {path}")
+                self._emit_activity(f"✍️ Writing: {path}")
+                tool_io_stats["write_intent"].append(path)
             elif tool_name == "Patch" and path:
-                self._emit_activity(f"🩹 Will patch: {path}")
+                self._emit_activity(f"🩹 Patching: {path}")
+                tool_io_stats["patch_intent"].append(path)
+            else:
+                msg = f"▶ Using tool: {tool_name}" + (f" — {detail}" if detail else "")
+                self._emit_activity(msg)
             self.status_controller.start_waiting(f"Using tool: {tool_name}", detail)
             self.status_controller.push_action(f"{tool_name}: {detail}" if detail else tool_name)
             return
@@ -558,22 +558,32 @@ class InteractiveShell:
             tool_use_id = str(event.get("tool_use_id", ""))
             tool_name = str(event.get("name", ""))
             tool_input: dict[str, Any] = {}
+            tool_io_stats: dict[str, list[str]] | None = None
             if tool_use_id and tool_use_id in self._tool_calls:
-                mapped_name, mapped_input = self._tool_calls.pop(tool_use_id)
+                mapped_name, mapped_input = self._tool_calls[tool_use_id]
                 if not tool_name:
                     tool_name = mapped_name
                 tool_input = mapped_input
+                tool_io_stats = self._tool_io.get(tool_use_id)
             outcome = "ok" if not event.get("is_error") else "error"
             self._emit_activity(f"✓ Tool finished: {tool_name} ({outcome})")
             if outcome == "ok":
                 path = self._path_for_tool(tool_name, tool_input)
                 if tool_name == "Write" and path:
                     self._note_file_written(path, "Write")
+                    if tool_io_stats is not None:
+                        tool_io_stats["write_ok"].append(path)
                 elif tool_name == "Patch" and path:
                     self._note_file_written(path, "Patch")
-                self._emit_tool_file_summary(tool_name)
+                    if tool_io_stats is not None:
+                        tool_io_stats["patch_ok"].append(path)
+                elif tool_name == "Read" and path and tool_io_stats is not None:
+                    tool_io_stats["read_ok"].append(path)
             self.status_controller.push_action(f"{tool_name} finished ({outcome})")
             self.status_controller.stop_spinner("Waiting", "")
+            if tool_use_id:
+                self._tool_calls.pop(tool_use_id, None)
+                self._tool_io.pop(tool_use_id, None)
             return
         if etype == "stream_text":
             return

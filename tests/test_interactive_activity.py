@@ -43,15 +43,28 @@ class FakeStatusController:
         return None
 
 
-def test_tool_use_read_emits_tool_and_file_read_activity(tmp_path: Path) -> None:
+def test_tool_use_read_emits_only_file_read_activity(tmp_path: Path) -> None:
     shell = InteractiveShell(DummyRunner(), tmp_path)
     fake_status = FakeStatusController()
     shell.status_controller = fake_status
 
     shell._on_runner_event({"type": "tool_use", "name": "Read", "input": {"file_path": "x.py"}})
 
-    assert "▶ Using tool: Read — Reading: x.py" in fake_status.persistent_lines
     assert "📖 Read: x.py" in fake_status.persistent_lines
+    assert not any(line.startswith("▶ Using tool: Read") for line in fake_status.persistent_lines)
+
+
+def test_tool_use_write_and_result_ok_emit_intent_and_confirmation_without_generic_line(tmp_path: Path) -> None:
+    shell = InteractiveShell(DummyRunner(), tmp_path)
+    fake_status = FakeStatusController()
+    shell.status_controller = fake_status
+
+    shell._on_runner_event({"type": "tool_use", "tool_use_id": "1", "name": "Write", "input": {"file_path": "x.py"}})
+    shell._on_runner_event({"type": "tool_result", "tool_use_id": "1", "is_error": False})
+
+    assert "✍️ Writing: x.py" in fake_status.persistent_lines
+    assert "💾 Wrote: x.py" in fake_status.persistent_lines
+    assert not any(line.startswith("▶ Using tool: Write") for line in fake_status.persistent_lines)
 
 
 def test_tool_result_success_emits_written_and_patched_lines(tmp_path: Path) -> None:
