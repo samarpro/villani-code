@@ -1,29 +1,57 @@
+import asyncio
 from pathlib import Path
 
-from villani_code.interactive import InteractiveShell
+from textual.widgets import Input
 
-
-class DummyCheckpoints:
-    def create(self, *_args, **_kwargs):
-        return None
-
-    def list(self):
-        return []
+from villani_code.tui.app import VillaniTUI
+from villani_code.tui.messages import LogAppend
 
 
 class DummyRunner:
-    checkpoints = DummyCheckpoints()
-
-    def run(self, _text):
-        return {"response": {"content": [{"type": "text", "text": "ok"}]}}
+    model = "demo"
+    permissions = None
 
 
-def test_keybinding_registration_and_actions(tmp_path: Path) -> None:
-    shell = InteractiveShell(DummyRunner(), tmp_path)
-    kb = shell._build_keybindings()
-    bindings = {b.keys for b in kb.bindings}
-    assert ("c-p",) in bindings
-    assert ("c-s",) in bindings
-    assert ("c-d",) in bindings
-    assert ("c-f",) in bindings
-    assert ("c-_",) in bindings
+class FakeController:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def run_prompt(self, text: str) -> None:
+        self.calls.append(text)
+
+
+def test_tui_constructs_with_runner(tmp_path: Path) -> None:
+    app = VillaniTUI(DummyRunner(), tmp_path)
+    assert app.runner.model == "demo"
+
+
+def test_tui_uses_textual_css_file(tmp_path: Path) -> None:
+    app = VillaniTUI(DummyRunner(), tmp_path)
+    assert app.CSS_PATH == "styles.tcss"
+
+
+def test_enter_submit_path_calls_controller_without_global_enter_binding(tmp_path: Path) -> None:
+    app = VillaniTUI(DummyRunner(), tmp_path)
+    app.controller = FakeController()
+    submitted = Input.Submitted(Input(id="input"), "hello")
+
+    app.on_input_submitted(submitted)
+
+    assert app.controller.calls == ["hello"]
+
+
+def test_ai_stream_starts_on_fresh_line(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = VillaniTUI(DummyRunner(), tmp_path)
+        async with app.run_test() as pilot:
+            app.post_message(LogAppend("> hi", kind="user"))
+            app.post_message(LogAppend("hello", kind="stream"))
+            app.post_message(LogAppend(" world", kind="stream"))
+            app.post_message(LogAppend("write out.py", kind="meta"))
+            await pilot.pause()
+            log = app.query_one("#log")
+            lines = list(log.lines)
+            assert not any("> hihello" in line for line in lines)
+            assert any("hello world" in line for line in lines)
+
+    asyncio.run(run())

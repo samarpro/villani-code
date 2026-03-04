@@ -1,0 +1,57 @@
+#main {
+  height: 100%;
+}
+
+#log {
+  height: 1fr;
+  border: solid $primary;
+  scrollbar-size-vertical: 3;
+  scrollbar-visibility: visible;
+}
+
+#approval-bar {
+  height: auto;
+  padding: 0 1;
+  background: $surface;
+  display: none;
+}
+
+#approval-prompt {
+  width: 1fr;
+  content-align: left middle;
+}
+
+#approval-options {
+  width: 1fr;
+  height: auto;
+}
+
+#approval-options > ListItem.selected {
+  background: #1f6feb;
+  color: white;
+  text-style: bold;
+}
+
+#status {
+  height: 1;
+  padding: 0 1;
+  background: $boost;
+}
+
+#input-row {
+  height: 3;
+  align: left middle;
+  padding: 0 1;
+}
+
+#input-prompt {
+  width: 20;
+}
+
+#input {
+  width: 1fr;
+}
+
+#spinner {
+  width: 40;
+}
