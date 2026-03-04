@@ -51,7 +51,9 @@ def test_ai_stream_starts_on_fresh_line(tmp_path: Path) -> None:
             await pilot.pause()
             log = app.query_one("#log")
             lines = list(log.lines)
-            assert not any("> hihello" in line for line in lines)
-            assert any("hello world" in line for line in lines)
+            rendered = "\n".join(lines)
+            assert "> hihello" not in rendered
+            assert "\nhello world" in rendered
+            assert rendered.count("hello world") == 1
 
     asyncio.run(run())

@@ -61,7 +61,6 @@ class RunnerController:
         request_id = str(uuid.uuid4())
         waiter = ApprovalWaiter(event=threading.Event())
         self._approval_waiters[request_id] = waiter
-        self.app.post_message(LogAppend(f"approval required: {tool_name} — {target}", kind="meta"))
         self.app.post_message(ApprovalRequest(f"Allow {tool_name} on {target}?", ["yes", "always", "no"], request_id))
         self.app.post_message(StatusUpdate("Waiting for approval"))
         waiter.event.wait()
@@ -106,12 +105,15 @@ class RunnerController:
             activity = self._file_activity_line(tool, payload)
             if activity:
                 self.app.post_message(LogAppend(activity, kind="meta"))
-            self.app.post_message(SpinnerState(True, f"Using tool: {tool}"))
-            self.app.post_message(StatusUpdate(f"Using tool: {tool}"))
+                self.app.post_message(StatusUpdate(activity))
+                self.app.post_message(SpinnerState(True, None))
+            else:
+                self.app.post_message(StatusUpdate("Working"))
+                self.app.post_message(SpinnerState(True, None))
             return
         if etype in {"tool_finished", "tool_result"}:
-            self.app.post_message(SpinnerState(False, "Waiting"))
-            self.app.post_message(StatusUpdate("Waiting"))
+            self.app.post_message(SpinnerState(False, None))
+            self.app.post_message(StatusUpdate("Working"))
             return
         if etype == "stream_text":
             self._assistant_stream_saw_text = True

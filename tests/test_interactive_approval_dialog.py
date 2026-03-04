@@ -52,6 +52,12 @@ def test_approval_shows_all_three_options(tmp_path: Path) -> None:
             await pilot.pause()
             options = bar.query_one("#approval-options")
             assert len(options.children) == 3
-            assert int(options.styles.height.value) == 4
+            assert bar.display is True
+            assert int(options.styles.height.value) == 3
+            assert int(options.styles.min_height.value) == 3
+            assert int(bar.styles.height.value) == 4
+            assert int(bar.styles.min_height.value) == 4
+            bar.hide_request()
+            assert bar.display is False
 
     asyncio.run(run())

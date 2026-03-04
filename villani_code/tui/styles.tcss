@@ -5,7 +5,7 @@
 #log {
   height: 1fr;
   border: solid $primary;
-  scrollbar-size-vertical: 3;
+  scrollbar-size-vertical: 4;
   scrollbar-visibility: visible;
 }
 
@@ -13,7 +13,6 @@
   height: auto;
   padding: 0 1;
   background: $surface;
-  display: none;
 }
 
 #approval-prompt {
