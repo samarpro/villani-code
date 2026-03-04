@@ -22,3 +22,15 @@ def test_parse_and_assemble_stream_blocks():
     assert msg["content"][1]["text"] == "hello"
     assert msg["stop_reason"] == "end_turn"
     assert msg["usage"]["input_tokens"] == 1
+
+
+def test_assemble_input_json_delta():
+    events=[
+        {"type":"message_start","message":{"id":"m","role":"assistant"}},
+        {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"Write"}},
+        {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"a.txt\"}"}},
+        {"type":"content_block_stop","index":0},
+        {"type":"message_stop"},
+    ]
+    msg=assemble_anthropic_stream(events)
+    assert msg["content"][0]["input"]["file_path"] == "a.txt"
