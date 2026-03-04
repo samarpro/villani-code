@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,18 @@ def load_mcp_config(repo: Path, managed_path: Path | None = None) -> dict[str, A
 def _load_json(path: Path | None) -> dict[str, Any]:
     if not path or not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    content = path.read_text(encoding="utf-8").strip()
+    if not content:
+        return {}
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        warnings.warn(f"Ignoring invalid JSON in {path}", RuntimeWarning, stacklevel=2)
+        return {}
+    if not isinstance(parsed, dict):
+        warnings.warn(f"Ignoring non-object JSON in {path}", RuntimeWarning, stacklevel=2)
+        return {}
+    return parsed
 
 
 def _deep_merge(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
