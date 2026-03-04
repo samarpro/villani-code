@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from prompt_toolkit.layout.margins import ScrollbarMargin
+
 from villani_code.interactive import InteractiveShell
 
 
@@ -42,3 +44,10 @@ def test_append_log_uses_incremental_buffer_update(tmp_path: Path) -> None:
     assert first_text == "first"
     assert shell.log_area.buffer.text.endswith("\nsecond")
     assert "\n".join(shell.log_lines) == shell.log_area.buffer.text
+
+
+def test_log_and_stream_use_clickable_scrollbar_margins(tmp_path: Path) -> None:
+    shell = InteractiveShell(DummyRunner(), tmp_path)
+
+    assert any(isinstance(margin, ScrollbarMargin) for margin in shell.log_area.window.right_margins)
+    assert any(isinstance(margin, ScrollbarMargin) for margin in shell.stream_area.window.right_margins)

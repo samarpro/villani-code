@@ -17,6 +17,7 @@ from prompt_toolkit.layout import Dimension
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import ConditionalContainer, HSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.widgets import TextArea
 from rich.console import Console
 
@@ -83,6 +84,8 @@ class InteractiveShell:
         self._log_text = ""
         self.log_area = TextArea(text="", read_only=True, scrollbar=True, focusable=True)
         self.stream_area = TextArea(text="", read_only=True, scrollbar=True, focusable=True)
+        self._configure_scrollbar_interaction(self.log_area)
+        self._configure_scrollbar_interaction(self.stream_area)
         self.banner_area = Window(
             content=FormattedTextControl(self._banner_text),
             height=Dimension.exact(self.LAUNCH_BANNER.count("\n") + 2),
@@ -785,6 +788,12 @@ class InteractiveShell:
             return
         area.window.vertical_scroll = 0 if top else 10**9
         self._invalidate_ui()
+
+    def _configure_scrollbar_interaction(self, area: TextArea) -> None:
+        """Use explicit scrollbar margins so click/drag interactions work reliably."""
+        if area.window is None:
+            return
+        area.window.right_margins = [ScrollbarMargin(display_arrows=True)]
 
     def _move_approval_selection(self, delta: int) -> None:
         if self._approval_request is None:
