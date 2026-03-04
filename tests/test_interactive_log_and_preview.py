@@ -64,3 +64,51 @@ def test_non_stream_fallback_has_no_assistant_prefix(tmp_path: Path) -> None:
     ai = [m.text for m in app.messages if isinstance(m, LogAppend) and m.kind == "ai"]
     assert ai == ["hello"]
     assert "assistant>" not in ai[0]
+
+
+def test_request_approval_posts_prompt_without_meta_spam(tmp_path: Path) -> None:
+    app = DummyApp()
+    controller = RunnerController(DummyRunner(), app)
+
+    request_id = ""
+
+    def resolve() -> None:
+        nonlocal request_id
+        import time
+
+        deadline = time.time() + 1
+        while time.time() < deadline:
+            req = next((m for m in app.messages if m.__class__.__name__ == "ApprovalRequest"), None)
+            if req is not None:
+                request_id = req.request_id
+                controller.resolve_approval(req.request_id, "yes")
+                return
+            time.sleep(0.01)
+
+    import threading
+
+    t = threading.Thread(target=resolve)
+    t.start()
+    approved = controller.request_approval("Read", {"file_path": "x.py"})
+    t.join(timeout=1)
+
+    assert approved is True
+    lines = [m.text for m in app.messages if isinstance(m, LogAppend)]
+    assert all("approval required" not in line for line in lines)
+    assert request_id
+
+
+def test_streamed_response_does_not_emit_fallback_ai_dump(tmp_path: Path) -> None:
+    class StreamingRunner(DummyRunner):
+        def run(self, _text):
+            self.event_callback({"type": "stream_text", "text": "hello"})
+            return {"response": {"content": [{"type": "text", "text": "hello"}]}}
+
+    app = DummyApp()
+    controller = RunnerController(StreamingRunner(), app)
+    controller._run_prompt_worker("hi")
+
+    stream = [m.text for m in app.messages if isinstance(m, LogAppend) and m.kind == "stream"]
+    ai = [m.text for m in app.messages if isinstance(m, LogAppend) and m.kind == "ai"]
+    assert stream == ["hello"]
+    assert ai == []

@@ -21,11 +21,11 @@ class VillaniLog(Log):
         app = self.app
         if isinstance(app, VillaniTUI):
             app.follow_tail = False
-        self.scroll_relative(y=-12)
+        self.scroll_relative(y=-24)
         event.stop()
 
     def on_mouse_scroll_down(self, event: MouseScrollDown) -> None:
-        self.scroll_relative(y=12)
+        self.scroll_relative(y=24)
         if self.is_vertical_scroll_end:
             app = self.app
             if isinstance(app, VillaniTUI):
@@ -79,9 +79,9 @@ class VillaniTUI(App[None]):
             self._ai_streaming = False
 
     def _start_ai_boundary(self, log: VillaniLog) -> None:
-        if not self._ai_started:
-            log.write("\n", scroll_end=self.follow_tail)
-            self._ai_started = True
+        if self._ai_started:
+            return
+        self._ai_started = True
 
     def on_log_append(self, message: LogAppend) -> None:
         log = self.query_one(VillaniLog)
@@ -91,7 +91,7 @@ class VillaniTUI(App[None]):
         if kind in {"user", "meta"}:
             self._end_ai_stream_if_open(log)
             self._ai_started = False
-            log.write_line(text, scroll_end=self.follow_tail)
+            log.write(f"{text}\n", scroll_end=self.follow_tail)
             return
 
         if kind == "ai":
@@ -114,7 +114,7 @@ class VillaniTUI(App[None]):
 
         self._end_ai_stream_if_open(log)
         self._ai_started = False
-        log.write_line(text, scroll_end=self.follow_tail)
+        log.write(f"{text}\n", scroll_end=self.follow_tail)
 
     def on_status_update(self, message: StatusUpdate) -> None:
         self.query_one(StatusBarWidget).set_status(message.text)
@@ -134,7 +134,6 @@ class VillaniTUI(App[None]):
         if request_id is None:
             return
         self.controller.resolve_approval(request_id, event.choice)
-        self.post_message(LogAppend(f"approval: {event.choice}", kind="meta"))
         bar.hide_request()
         input_widget = self.query_one(Input)
         input_widget.disabled = False
