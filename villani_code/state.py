@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from rich.console import Console
 
 from villani_code.anthropic_client import AnthropicClient
+from villani_code.checkpoints import CheckpointManager
+from villani_code.hooks import HookRunner
+from villani_code.mcp import load_mcp_config
+from villani_code.permissions import Decision, PermissionConfig, PermissionEngine
 from villani_code.prompting import build_initial_messages, build_system_blocks
+from villani_code.skills import discover_skills
 from villani_code.streaming import assemble_anthropic_stream
 from villani_code.tools import execute_tool, tool_specs
 from villani_code.transcripts import save_transcript
-from villani_code.utils import merge_extra_json, normalize_content_blocks
+from villani_code.utils import ensure_dir, merge_extra_json, normalize_content_blocks, now_stamp
 
 
 class Runner:
@@ -24,6 +32,10 @@ class Runner:
         verbose: bool = False,
         extra_json: str | None = None,
         redact: bool = False,
+        bypass_permissions: bool = False,
+        auto_accept_edits: bool = False,
+        plan_mode: bool = False,
+        approval_callback: Callable[[str, dict[str, Any]], bool] | None = None,
     ):
         self.client = client
         self.repo = repo
@@ -35,10 +47,27 @@ class Runner:
         self.verbose = verbose
         self.extra_json = extra_json
         self.redact = redact
+        self.bypass_permissions = bypass_permissions
+        self.auto_accept_edits = auto_accept_edits
+        self.plan_mode = plan_mode
+        self.approval_callback = approval_callback or (lambda _n, _i: True)
+        self.console = Console()
+        self.permissions = PermissionEngine(
+            PermissionConfig.from_strings(
+                deny=["Read(.env)", "Read(secrets/**)", "Bash(curl *)", "Bash(wget *)"],
+                ask=[],
+                allow=["Read(*)", "Ls(*)", "Grep(*)", "Search(*)", "Glob(*)", "Bash(*)", "Write(*)", "Patch(*)", "GitStatus(*)", "GitDiff(*)", "GitLog(*)", "GitBranch(*)", "GitCheckout(*)", "GitCommit(*)"],
+            ),
+            repo=self.repo,
+        )
+        self.hooks = HookRunner(hooks={})
+        self.checkpoints = CheckpointManager(self.repo)
+        self.skills = discover_skills(self.repo)
+        self.mcp = load_mcp_config(self.repo)
 
-    def run(self, instruction: str) -> dict[str, Any]:
-        messages = build_initial_messages(self.repo, instruction)
-        system = build_system_blocks()
+    def run(self, instruction: str, messages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        messages = messages or build_initial_messages(self.repo, instruction)
+        system = build_system_blocks(self.repo)
         tools = tool_specs()
         transcript: dict[str, Any] = {
             "requests": [],
@@ -47,6 +76,7 @@ class Runner:
             "tool_results": [],
             "streamed_events_count": 0,
         }
+        self._save_session_snapshot(messages)
 
         while True:
             payload = {
@@ -64,7 +94,10 @@ class Runner:
 
             raw = self.client.create_message(payload, stream=self.stream)
             if self.stream:
-                events = list(raw)
+                events = []
+                for event in raw:
+                    events.append(event)
+                    self._render_stream_event(event)
                 transcript["streamed_events_count"] += len(events)
                 response = assemble_anthropic_stream(events)
             else:
@@ -73,39 +106,54 @@ class Runner:
             response["content"] = normalize_content_blocks(response.get("content"))
             transcript["responses"].append(response)
 
-            assistant_message = {
-                "role": "assistant",
-                "content": response.get("content", []),
-            }
+            assistant_message = {"role": "assistant", "content": response.get("content", [])}
             messages.append(assistant_message)
 
             tool_uses = [b for b in response.get("content", []) if b.get("type") == "tool_use"]
             if not tool_uses:
                 transcript["final_assistant_content"] = response.get("content", [])
                 transcript_path = save_transcript(self.repo, transcript, redact=self.redact)
-                return {
-                    "response": response,
-                    "messages": messages,
-                    "transcript_path": str(transcript_path),
-                    "transcript": transcript,
-                }
+                self._save_session_snapshot(messages)
+                return {"response": response, "messages": messages, "transcript_path": str(transcript_path), "transcript": transcript}
 
             for block in tool_uses:
                 tool_name = block.get("name", "")
                 tool_input = block.get("input", {})
                 tool_use_id = str(block.get("id"))
-                result = execute_tool(tool_name, tool_input, self.repo, unsafe=self.unsafe)
+
+                hook_pre = self.hooks.run_event("PreToolUse", {"event": "PreToolUse", "tool": tool_name, "input": tool_input})
+                if not hook_pre.allow:
+                    result = {"content": f"Blocked by hook: {hook_pre.reason}", "is_error": True}
+                else:
+                    decision = self.permissions.evaluate(tool_name, tool_input, bypass=self.bypass_permissions, auto_accept_edits=self.auto_accept_edits)
+                    if decision == Decision.DENY:
+                        result = {"content": "Denied by permission policy", "is_error": True}
+                    elif decision == Decision.ASK and not self.approval_callback(tool_name, tool_input):
+                        result = {"content": "User denied tool execution", "is_error": True}
+                    elif self.plan_mode and tool_name in {"Write", "Patch"}:
+                        result = {"content": "Plan mode: edit not executed", "is_error": False}
+                    else:
+                        if tool_name in {"Write", "Patch"}:
+                            file_path = Path(tool_input.get("file_path", ""))
+                            self.checkpoints.create([file_path], message_index=len(messages))
+                        result = execute_tool(tool_name, tool_input, self.repo, unsafe=self.unsafe)
+                self.hooks.run_event("PostToolUse", {"event": "PostToolUse", "tool": tool_name, "input": tool_input, "result": result})
+
                 transcript["tool_invocations"].append({"name": tool_name, "input": tool_input, "id": tool_use_id})
                 transcript["tool_results"].append(result)
-                tool_result_message = {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": result["content"],
-                            "is_error": result["is_error"],
-                        }
-                    ],
-                }
-                messages.append(tool_result_message)
+                messages.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": result["content"], "is_error": result["is_error"]}]})
+
+    def _save_session_snapshot(self, messages: list[dict[str, Any]]) -> None:
+        root = self.repo / ".villani_code" / "sessions"
+        ensure_dir(root)
+        sid = "last"
+        (root / f"{sid}.json").write_text(json.dumps({"id": sid, "messages": messages, "cwd": str(self.repo), "settings": {"model": self.model}}, indent=2), encoding="utf-8")
+
+    def _render_stream_event(self, event: dict[str, Any]) -> None:
+        if event.get("type") != "content_block_delta":
+            return
+        delta = event.get("delta", {})
+        if delta.get("type") == "text_delta":
+            print(delta.get("text", ""), end="", flush=True)
+        if self.verbose and delta.get("type") == "input_json_delta":
+            self.console.print(f"[dim]tool delta: {delta.get('partial_json','')[:200]}[/dim]")
