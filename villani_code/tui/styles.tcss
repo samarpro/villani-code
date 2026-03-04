@@ -26,7 +26,7 @@
   height: auto;
 }
 
-#approval-options > .option-list--option-highlighted {
+#approval-options > ListItem.selected {
   background: #1f6feb;
   color: white;
   text-style: bold;
