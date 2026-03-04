@@ -219,22 +219,23 @@ class InteractiveShell:
         def _approve_no(_):
             self._resolve_approval("no")
 
-        @kb.add("left", filter=Condition(lambda: self._approval_request is not None))
-        @kb.add("up", filter=Condition(lambda: self._approval_request is not None))
+        @kb.add("left", filter=Condition(lambda: self._approval_request is not None), eager=True)
+        @kb.add("up", filter=Condition(lambda: self._approval_request is not None), eager=True)
         def _approval_prev(_):
             self._move_approval_selection(-1)
 
-        @kb.add("right", filter=Condition(lambda: self._approval_request is not None))
-        @kb.add("down", filter=Condition(lambda: self._approval_request is not None))
-        @kb.add("tab", filter=Condition(lambda: self._approval_request is not None))
+        @kb.add("right", filter=Condition(lambda: self._approval_request is not None), eager=True)
+        @kb.add("down", filter=Condition(lambda: self._approval_request is not None), eager=True)
+        @kb.add("tab", filter=Condition(lambda: self._approval_request is not None), eager=True)
         def _approval_next(_):
             self._move_approval_selection(1)
 
+        @kb.add("enter", filter=Condition(lambda: self._approval_request is not None), eager=True)
+        def _approve_on_enter(_):
+            self._resolve_approval(self._approval_selected_choice())
+
         @kb.add("enter")
         def _default_enter(event):
-            if self._approval_request is not None:
-                self._resolve_approval(self._approval_selected_choice())
-                return
             event.app.current_buffer.validate_and_handle()
 
         return kb
@@ -368,11 +369,11 @@ class InteractiveShell:
         return [
             ("class:bottom-toolbar", base + " | "),
             ("class:approval.label", "APPROVAL: "),
-            (yes_style, "Yes"),
+            (yes_style, "[ Yes ]"),
             ("class:bottom-toolbar", "   "),
-            (always_style, "Always (this target)"),
+            (always_style, "[ Always (this target) ]"),
             ("class:bottom-toolbar", "   "),
-            (no_style, "No"),
+            (no_style, "[ No ]"),
             ("class:bottom-toolbar", "   ↑/↓ select • Enter confirm"),
         ]
 
@@ -762,6 +763,8 @@ class InteractiveShell:
         if area.window is None:
             return
         area.window.right_margins = [ScrollbarMargin(display_arrows=True)]
+        area.window.left_margins = []
+        area.window.allow_scroll_beyond_bottom = False
 
     def _move_approval_selection(self, delta: int) -> None:
         if self._approval_request is None:

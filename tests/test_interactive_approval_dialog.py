@@ -110,7 +110,7 @@ def test_bottom_toolbar_highlights_selected_approval_choice(tmp_path: Path) -> N
 
     toolbar = shell._bottom_toolbar()
 
-    assert ("class:approval.active", "Always (this target)") in toolbar
+    assert ("class:approval.active", "[ Always (this target) ]") in toolbar
 
 
 def test_move_approval_selection_wraps(tmp_path: Path) -> None:
