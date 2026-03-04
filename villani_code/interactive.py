@@ -417,7 +417,7 @@ class InteractiveShell:
             self.status_controller.start_waiting("Thinking")
             return
         if etype == "first_text_delta":
-            self.status_controller.stop_spinner()
+            self.status_controller.stop_spinner("Responding")
             return
         if etype == "tool_use":
             tool_name = str(event.get("name", ""))
