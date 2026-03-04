@@ -5,6 +5,7 @@ from typing import Any
 
 from textual import on
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.events import Key, MouseScrollDown, MouseScrollUp
 from textual.widgets import Input, Log, Static
@@ -35,6 +36,15 @@ class VillaniLog(Log):
 
 class VillaniTUI(App[None]):
     CSS_PATH = "styles.tcss"
+    BINDINGS = [
+        Binding("left", "approval_prev", show=False, priority=True),
+        Binding("up", "approval_prev", show=False, priority=True),
+        Binding("right", "approval_next", show=False, priority=True),
+        Binding("down", "approval_next", show=False, priority=True),
+        Binding("tab", "approval_next", show=False, priority=True),
+        Binding("enter", "approval_confirm", show=False, priority=True),
+        Binding("escape", "approval_deny", show=False, priority=True),
+    ]
 
     def __init__(self, runner: Any, repo: Path) -> None:
         super().__init__()
@@ -100,8 +110,10 @@ class VillaniTUI(App[None]):
         self.query_one(StatusBarWidget).set_spinner(message.active, message.label)
 
     def on_approval_request(self, message: ApprovalRequest) -> None:
-        self.query_one(ApprovalBar).show_request(message.prompt, message.request_id)
+        bar = self.query_one(ApprovalBar)
+        bar.show_request(message.prompt, message.request_id)
         self.query_one(Input).disabled = True
+        bar.focus()
 
     @on(ApprovalBar.ApprovalSelected)
     def on_approval_selected(self, event: ApprovalBar.ApprovalSelected) -> None:
@@ -115,22 +127,30 @@ class VillaniTUI(App[None]):
         self.query_one(Input).disabled = False
         self.query_one(Input).focus()
 
-    def on_key(self, event: Key) -> None:
-        bar = self.query_one(ApprovalBar)
-        if not bar.display:
-            if event.key == "end":
-                self.follow_tail = True
-                self.query_one(VillaniLog).scroll_end(animate=False)
-            return
-        if event.key in {"left", "up"}:
+    def _approval_bar(self) -> ApprovalBar:
+        return self.query_one(ApprovalBar)
+
+    def action_approval_prev(self) -> None:
+        bar = self._approval_bar()
+        if bar.display:
             bar.move(-1)
-            event.stop()
-        elif event.key in {"right", "down", "tab"}:
+
+    def action_approval_next(self) -> None:
+        bar = self._approval_bar()
+        if bar.display:
             bar.move(1)
-            event.stop()
-        elif event.key == "enter":
+
+    def action_approval_confirm(self) -> None:
+        bar = self._approval_bar()
+        if bar.display:
             self.on_approval_selected(ApprovalBar.ApprovalSelected(bar.selected_choice()))
-            event.stop()
-        elif event.key == "escape":
+
+    def action_approval_deny(self) -> None:
+        bar = self._approval_bar()
+        if bar.display:
             self.on_approval_selected(ApprovalBar.ApprovalSelected("no"))
-            event.stop()
+
+    def on_key(self, event: Key) -> None:
+        if event.key == "end":
+            self.follow_tail = True
+            self.query_one(VillaniLog).scroll_end(animate=False)
