@@ -36,7 +36,7 @@ class RunnerController:
 
     def _run_prompt_worker(self, text: str) -> None:
         self.app.post_message(LogAppend(f"you> {text}"))
-        self.app.post_message(SpinnerState(True, "Thinking"))
+        self.app.post_message(SpinnerState(True, None))
         self.app.post_message(StatusUpdate("Thinking"))
         self._assistant_stream_saw_text = False
         result = self.runner.run(text)
@@ -81,10 +81,12 @@ class RunnerController:
     def on_runner_event(self, event: dict[str, Any]) -> None:
         etype = event.get("type")
         if etype == "model_request_started":
-            self.app.post_message(SpinnerState(True, "Thinking"))
+            self.app.post_message(SpinnerState(True, None))
+            self.app.post_message(StatusUpdate("Thinking"))
             return
         if etype == "first_text_delta":
-            self.app.post_message(SpinnerState(False, "Responding"))
+            self.app.post_message(SpinnerState(True, None))
+            self.app.post_message(StatusUpdate("Responding"))
             return
         if etype in {"tool_use", "tool_started"}:
             tool = str(event.get("name", ""))
@@ -94,9 +96,11 @@ class RunnerController:
                 self._tool_calls[tool_use_id] = (tool, payload)
             self.app.post_message(LogAppend(f"▶ Using tool: {tool}"))
             self.app.post_message(SpinnerState(True, f"Using tool: {tool}"))
+            self.app.post_message(StatusUpdate(f"Using tool: {tool}"))
             return
         if etype in {"tool_finished", "tool_result"}:
             self.app.post_message(SpinnerState(False, "Waiting"))
+            self.app.post_message(StatusUpdate("Waiting"))
             return
         if etype == "stream_text":
             self._assistant_stream_saw_text = True

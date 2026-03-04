@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from villani_code.tui.controller import RunnerController
-from villani_code.tui.messages import LogAppend
+from villani_code.tui.messages import LogAppend, SpinnerState
 
 
 class DummyRunner:
@@ -25,3 +25,14 @@ def test_stream_event_posts_log_append_incrementally(tmp_path: Path) -> None:
 
     chunks = [m.text for m in app.messages if isinstance(m, LogAppend)]
     assert chunks == ["hel", "lo"]
+
+
+def test_model_started_uses_spinner_theme_label_not_literal_thinking(tmp_path: Path) -> None:
+    app = DummyApp()
+    controller = RunnerController(DummyRunner(), app)
+
+    controller.on_runner_event({"type": "model_request_started"})
+
+    state = next(m for m in app.messages if isinstance(m, SpinnerState))
+    assert state.active is True
+    assert state.label is None

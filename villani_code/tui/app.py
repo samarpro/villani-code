@@ -5,9 +5,9 @@ from typing import Any
 
 from textual import on
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.events import Key, MouseScrollDown, MouseScrollUp
-from textual.widgets import Input, Log
+from textual.widgets import Input, Log, Static
 
 from villani_code.tui.assets import LAUNCH_BANNER
 from villani_code.tui.controller import RunnerController
@@ -49,7 +49,9 @@ class VillaniTUI(App[None]):
             yield VillaniLog(id="log")
             yield ApprovalBar()
             yield StatusBarWidget(id="status")
-            yield Input(placeholder="🤖 Villani Code > ", id="input")
+            with Horizontal(id="input-row"):
+                yield Static("🤖 Villani Code >", id="input-prompt")
+                yield Input(id="input")
 
     def on_mount(self) -> None:
         log = self.query_one(VillaniLog)

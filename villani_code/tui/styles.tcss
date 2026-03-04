@@ -21,8 +21,18 @@
   background: $boost;
 }
 
-#input {
+#input-row {
   height: 3;
+  align: left middle;
+  padding: 0 1;
+}
+
+#input-prompt {
+  width: 20;
+}
+
+#input {
+  width: 1fr;
 }
 
 #spinner {

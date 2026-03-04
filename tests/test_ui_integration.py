@@ -11,3 +11,8 @@ class DummyRunner:
 def test_tui_constructs_with_runner(tmp_path: Path) -> None:
     app = VillaniTUI(DummyRunner(), tmp_path)
     assert app.runner.model == "demo"
+
+
+def test_tui_uses_textual_css_file(tmp_path: Path) -> None:
+    app = VillaniTUI(DummyRunner(), tmp_path)
+    assert app.CSS_PATH == "styles.tcss"
