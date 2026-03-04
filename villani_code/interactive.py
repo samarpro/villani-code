@@ -764,7 +764,6 @@ class InteractiveShell:
             return
         area.window.right_margins = [ScrollbarMargin(display_arrows=True)]
         area.window.left_margins = []
-        area.window.allow_scroll_beyond_bottom = False
 
     def _move_approval_selection(self, delta: int) -> None:
         if self._approval_request is None:
