@@ -72,25 +72,39 @@ class VillaniTUI(App[None]):
             return
         self.controller.run_prompt(text)
 
-    def _append_log_text(self, text: str) -> None:
-        log = self.query_one(VillaniLog)
+    def _close_stream_if_open(self) -> None:
         if self._streaming:
-            parts = text.split("\n")
-            log.write(parts[0], scroll_end=self.follow_tail)
-            for part in parts[1:]:
-                log.write_line(part, scroll_end=self.follow_tail)
-            return
-        log.write_line(text, scroll_end=self.follow_tail)
+            self._streaming = False
 
     def on_log_append(self, message: LogAppend) -> None:
+        log = self.query_one(VillaniLog)
         text = message.text
-        is_stream_delta = text and not text.startswith(("you>", "assistant>", "▶", "⏸", "policy[", "approval>"))
-        if is_stream_delta and not self._streaming:
-            self.query_one(VillaniLog).write("assistant> ", scroll_end=self.follow_tail)
-            self._streaming = True
-        if not is_stream_delta:
-            self._streaming = False
-        self._append_log_text(text)
+        kind = message.kind
+
+        if kind in {"user", "meta"}:
+            self._close_stream_if_open()
+            log.write_line(text, scroll_end=self.follow_tail)
+            return
+
+        if kind == "ai":
+            self._close_stream_if_open()
+            log.write_line("", scroll_end=self.follow_tail)
+            for line in text.split("\n"):
+                log.write_line(line, scroll_end=self.follow_tail)
+            return
+
+        if kind == "stream":
+            if not self._streaming:
+                log.write_line("", scroll_end=self.follow_tail)
+                self._streaming = True
+            parts = text.split("\n")
+            log.write(parts[0], scroll_end=self.follow_tail)
+            for line in parts[1:]:
+                log.write_line(line, scroll_end=self.follow_tail)
+            return
+
+        self._close_stream_if_open()
+        log.write_line(text, scroll_end=self.follow_tail)
 
     def on_status_update(self, message: StatusUpdate) -> None:
         self.query_one(StatusBarWidget).set_status(message.text)
@@ -101,8 +115,7 @@ class VillaniTUI(App[None]):
     def on_approval_request(self, message: ApprovalRequest) -> None:
         bar = self.query_one(ApprovalBar)
         self.query_one(Input).disabled = True
-        bar.show_request(message.prompt, message.request_id)
-        bar.focus()
+        bar.show_request(message.prompt, message.request_id, message.choices)
 
     @on(ApprovalBar.ApprovalSelected)
     def on_approval_selected(self, event: ApprovalBar.ApprovalSelected) -> None:
@@ -111,7 +124,7 @@ class VillaniTUI(App[None]):
         if request_id is None:
             return
         self.controller.resolve_approval(request_id, event.choice)
-        self.post_message(LogAppend(f"approval> {event.choice}"))
+        self.post_message(LogAppend(f"approval: {event.choice}", kind="meta"))
         bar.hide_request()
         input_widget = self.query_one(Input)
         input_widget.disabled = False

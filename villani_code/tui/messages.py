@@ -4,8 +4,9 @@ from textual.message import Message
 
 
 class LogAppend(Message):
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, kind: str = "meta") -> None:
         self.text = text
+        self.kind = kind
         super().__init__()
 
 

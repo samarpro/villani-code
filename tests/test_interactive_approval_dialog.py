@@ -37,4 +37,4 @@ def test_approval_bridge_blocks_worker_until_resolved(tmp_path: Path) -> None:
 
 def test_approval_bar_has_local_keybindings() -> None:
     keys = {binding.key for binding in ApprovalBar.BINDINGS}
-    assert {"left", "right", "up", "down", "tab", "enter", "escape"}.issubset(keys)
+    assert {"up", "down", "enter", "escape"}.issubset(keys)

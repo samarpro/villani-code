@@ -10,23 +10,25 @@
 }
 
 #approval-bar {
-  height: 3;
+  height: auto;
   padding: 0 1;
   background: $surface;
-  align: left middle;
+  display: none;
 }
 
 #approval-prompt {
   width: 1fr;
+  padding: 0 0 1 0;
   content-align: left middle;
 }
 
-#approval-bar Button {
-  width: auto;
-  margin-left: 1;
+#approval-options {
+  width: 1fr;
+  height: 3;
+  border: round $panel;
 }
 
-#approval-bar Button.-primary {
+#approval-options > .option-list--option-highlighted {
   background: #1f6feb;
   color: white;
   text-style: bold;

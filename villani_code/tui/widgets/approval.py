@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Vertical
 from textual.message import Message
-from textual.widgets import Button, Static
+from textual.widgets import OptionList, Static
 
 
-class ApprovalBar(Horizontal):
+class ApprovalBar(Vertical):
     BINDINGS = [
-        Binding("left", "prev", show=False),
-        Binding("up", "prev", show=False),
-        Binding("right", "next", show=False),
-        Binding("down", "next", show=False),
-        Binding("tab", "next", show=False),
+        Binding("up", "cursor_up", show=False),
+        Binding("down", "cursor_down", show=False),
         Binding("enter", "confirm", show=False),
         Binding("escape", "deny", show=False),
     ]
@@ -22,67 +18,58 @@ class ApprovalBar(Horizontal):
     def __init__(self) -> None:
         super().__init__(id="approval-bar")
         self.request_id: str | None = None
-        self._choices = ["yes", "always", "no"]
-        self._index = 0
+        self._choices: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield Static("", id="approval-prompt")
-        yield Button("Approve", id="approve-yes")
-        yield Button("Approve always", id="approve-always")
-        yield Button("Deny", id="approve-no")
+        yield OptionList(id="approval-options")
 
     def on_mount(self) -> None:
         self.display = False
 
-    def show_request(self, prompt: str, request_id: str) -> None:
+    def show_request(self, prompt: str, request_id: str, choices: list[str]) -> None:
         self.request_id = request_id
+        self._choices = choices
         self.display = True
-        self._index = 0
         self.query_one("#approval-prompt", Static).update(prompt)
-        self._sync_highlight()
-        self.focus()
+        options = self.query_one("#approval-options", OptionList)
+        options.clear_options()
+        options.add_options([choice.capitalize() for choice in choices])
+        options.highlighted = 0
+        options.focus()
 
     def hide_request(self) -> None:
         self.request_id = None
         self.display = False
 
-    def selected_choice(self) -> str:
-        return self._choices[self._index]
+    def _options(self) -> OptionList:
+        return self.query_one("#approval-options", OptionList)
 
-    def move(self, delta: int) -> None:
-        self._index = (self._index + delta) % len(self._choices)
-        self._sync_highlight()
-
-    def action_prev(self) -> None:
+    def action_cursor_up(self) -> None:
         if self.request_id is not None:
-            self.move(-1)
+            self._options().action_cursor_up()
 
-    def action_next(self) -> None:
+    def action_cursor_down(self) -> None:
         if self.request_id is not None:
-            self.move(1)
+            self._options().action_cursor_down()
 
     def action_confirm(self) -> None:
-        if self.request_id is not None:
-            self.post_message(self.ApprovalSelected(self.selected_choice()))
+        if self.request_id is None:
+            return
+        index = self._options().highlighted
+        if index is None or index < 0 or index >= len(self._choices):
+            return
+        self.post_message(self.ApprovalSelected(self._choices[index]))
 
     def action_deny(self) -> None:
         if self.request_id is not None:
             self.post_message(self.ApprovalSelected("no"))
 
-    def _sync_highlight(self) -> None:
-        mapping = {"yes": "#approve-yes", "always": "#approve-always", "no": "#approve-no"}
-        for choice, selector in mapping.items():
-            button = self.query_one(selector, Button)
-            button.variant = "primary" if choice == self.selected_choice() else "default"
-
-    @on(Button.Pressed)
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        choice = "no"
-        if event.button.id == "approve-yes":
-            choice = "yes"
-        elif event.button.id == "approve-always":
-            choice = "always"
-        self.post_message(self.ApprovalSelected(choice))
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if self.request_id is None:
+            return
+        if 0 <= event.option_index < len(self._choices):
+            self.post_message(self.ApprovalSelected(self._choices[event.option_index]))
 
     class ApprovalSelected(Message):
         def __init__(self, choice: str) -> None:
