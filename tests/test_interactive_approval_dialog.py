@@ -101,3 +101,24 @@ def test_resolve_approval_always_adds_allowlist_and_reenables_input(tmp_path: Pa
     assert ("Read", "Read:README.md") in shell._session_approval_allowlist
     assert shell.input_field.read_only is False
     assert event.is_set()
+
+
+def test_bottom_toolbar_highlights_selected_approval_choice(tmp_path: Path) -> None:
+    shell = InteractiveShell(DummyRunner(), tmp_path)
+    shell._approval_request = {"tool": "Read", "target": "Read:README.md", "choice": None}
+    shell._approval_selection_index = 1
+
+    toolbar = shell._bottom_toolbar()
+
+    assert ("class:approval.active", "Always (this target)") in toolbar
+
+
+def test_move_approval_selection_wraps(tmp_path: Path) -> None:
+    shell = InteractiveShell(DummyRunner(), tmp_path)
+    shell._approval_request = {"tool": "Read", "target": "Read:README.md", "choice": None}
+
+    shell._move_approval_selection(-1)
+    assert shell._approval_selected_choice() == "no"
+
+    shell._move_approval_selection(1)
+    assert shell._approval_selected_choice() == "yes"

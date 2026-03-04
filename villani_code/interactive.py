@@ -17,7 +17,6 @@ from prompt_toolkit.layout import Dimension
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import ConditionalContainer, HSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
-from prompt_toolkit.layout.processors import ConditionalProcessor, HighlightSearchProcessor
 from prompt_toolkit.widgets import TextArea
 from rich.console import Console
 
@@ -77,6 +76,7 @@ class InteractiveShell:
         self._running = False
         self._approval_request: dict[str, Any] | None = None
         self._approval_event: threading.Event | None = None
+        self._approval_selection_index = 0
         self._palette_mode = False
 
         self.log_lines: deque[str] = deque(maxlen=self.MAX_LOG_HISTORY)
@@ -238,8 +238,22 @@ class InteractiveShell:
         def _approve_no(_):
             self._resolve_approval("no")
 
+        @kb.add("left", filter=Condition(lambda: self._approval_request is not None))
+        @kb.add("up", filter=Condition(lambda: self._approval_request is not None))
+        def _approval_prev(_):
+            self._move_approval_selection(-1)
+
+        @kb.add("right", filter=Condition(lambda: self._approval_request is not None))
+        @kb.add("down", filter=Condition(lambda: self._approval_request is not None))
+        @kb.add("tab", filter=Condition(lambda: self._approval_request is not None))
+        def _approval_next(_):
+            self._move_approval_selection(1)
+
         @kb.add("enter")
         def _default_enter(event):
+            if self._approval_request is not None:
+                self._resolve_approval(self._approval_selected_choice())
+                return
             event.app.current_buffer.validate_and_handle()
 
         return kb
@@ -369,14 +383,18 @@ class InteractiveShell:
         base = self.status_bar.format(width) + f" | {self.status_controller.status_line()}"
         if self._approval_request is None:
             return [("class:bottom-toolbar", base)]
+        yes_style = "class:approval.active" if self._approval_selection_index == 0 else "class:approval.yes"
+        always_style = "class:approval.active" if self._approval_selection_index == 1 else "class:approval.always"
+        no_style = "class:approval.active" if self._approval_selection_index == 2 else "class:approval.no"
         return [
             ("class:bottom-toolbar", base + " | "),
             ("class:approval.label", "APPROVAL: "),
-            ("class:approval.yes", "[Y] Yes"),
+            (yes_style, "Yes"),
             ("class:bottom-toolbar", "   "),
-            ("class:approval.always", "[A] Always (this target)"),
+            (always_style, "Always (this target)"),
             ("class:bottom-toolbar", "   "),
-            ("class:approval.no", "[N] No"),
+            (no_style, "No"),
+            ("class:bottom-toolbar", "   ↑/↓ select • Enter confirm"),
         ]
 
     def _invalidate_ui(self) -> None:
@@ -432,8 +450,9 @@ class InteractiveShell:
         request = {"tool": tool_name, "target": target, "payload": payload, "event": event, "choice": None}
         self._approval_request = request
         self._approval_event = event
+        self._approval_selection_index = 0
         self._schedule_ui(lambda: self._append_log(f"⏸ Approval required: {tool_name} — {target}"))
-        self._schedule_ui(lambda: self._append_log("Press Y/A/N to approve (input disabled until decision)."))
+        self._schedule_ui(lambda: self._append_log("Use arrow keys to choose approval, then press Enter (input disabled until decision)."))
         self._schedule_ui(self._begin_approval)
         self._schedule_ui(self._invalidate_ui)
         event.wait()
@@ -466,6 +485,7 @@ class InteractiveShell:
         self._approval_request = None
         self._approval_event.set()
         self._approval_event = None
+        self._approval_selection_index = 0
         if not self._running:
             self.input_field.read_only = False
         self.app.layout.focus(self.input_field)
@@ -765,3 +785,13 @@ class InteractiveShell:
             return
         area.window.vertical_scroll = 0 if top else 10**9
         self._invalidate_ui()
+
+    def _move_approval_selection(self, delta: int) -> None:
+        if self._approval_request is None:
+            return
+        self._approval_selection_index = (self._approval_selection_index + delta) % 3
+        self._invalidate_ui()
+
+    def _approval_selected_choice(self) -> str:
+        choices = ["yes", "always", "no"]
+        return choices[self._approval_selection_index]
