@@ -13,13 +13,11 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyPressEvent
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Dimension
 from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import ConditionalContainer, HSplit, Window
+from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.widgets import TextArea
-from rich.console import Console
 
 from ui.command_palette import CommandAction, CommandPalette
 from ui.diff_viewer import DiffViewer
@@ -50,7 +48,6 @@ class InteractiveShell:
     def __init__(self, runner: Runner, repo: Path):
         self.runner = runner
         self.repo = repo
-        self.console = Console()
         self.verbose_tools = False
         self.show_tasks = False
         self.focus_mode = False
@@ -73,7 +70,6 @@ class InteractiveShell:
         self._tool_calls: dict[str, tuple[str, dict[str, Any]]] = {}
         self._ui_actions: Queue[Callable[[], None]] = Queue()
         self._worker_thread: threading.Thread | None = None
-        self._live_stream_text = ""
         self._running = False
         self._approval_request: dict[str, Any] | None = None
         self._approval_event: threading.Event | None = None
@@ -83,14 +79,7 @@ class InteractiveShell:
         self.log_lines: deque[str] = deque(maxlen=self.MAX_LOG_HISTORY)
         self._log_text = ""
         self.log_area = TextArea(text="", read_only=True, scrollbar=True, focusable=True)
-        self.stream_area = TextArea(text="", read_only=True, scrollbar=True, focusable=True)
         self._configure_scrollbar_interaction(self.log_area)
-        self._configure_scrollbar_interaction(self.stream_area)
-        self.banner_area = Window(
-            content=FormattedTextControl(self._banner_text),
-            height=Dimension.exact(self.LAUNCH_BANNER.count("\n") + 2),
-            always_hide_cursor=True,
-        )
         self.input_field = TextArea(
             multiline=False,
             prompt="🤖 Villani Code > ",
@@ -112,25 +101,14 @@ class InteractiveShell:
         self.app = self._build_application()
 
     def run(self) -> None:
+        self._append_startup_banner()
         self._append_log("Ready. Type /help for commands.")
         self.app.run()
         self.status_controller.shutdown()
 
     def _build_application(self) -> Application:
         status_window = Window(content=self.status_control, height=1, always_hide_cursor=True)
-        stream_container = ConditionalContainer(
-            content=self.stream_area,
-            filter=Condition(lambda: bool(self._live_stream_text)),
-        )
-        root = HSplit(
-            [
-                self.banner_area,
-                self.log_area,
-                stream_container,
-                status_window,
-                self.input_field,
-            ]
-        )
+        root = HSplit([self.log_area, status_window, self.input_field])
         return Application(
             layout=Layout(root, focused_element=self.input_field),
             full_screen=True,
@@ -177,8 +155,8 @@ class InteractiveShell:
             self._show_shortcuts_help()
 
         @kb.add("c-s")
-        def _focus_stream(event: KeyPressEvent):
-            event.app.layout.focus(self.stream_area)
+        def _focus_log_alt(event: KeyPressEvent):
+            event.app.layout.focus(self.log_area)
 
         @kb.add("c-k")
         def _focus_log(event: KeyPressEvent):
@@ -302,8 +280,6 @@ class InteractiveShell:
         self._running = False
         self.input_field.read_only = False
         self.status_controller.update_phase("Idle")
-        self._live_stream_text = ""
-        self.stream_area.text = ""
         self._invalidate_ui()
 
     def _run_model_turn(self, text: str) -> None:
@@ -515,7 +491,7 @@ class InteractiveShell:
     def _show_shortcuts_help(self) -> None:
         self._append_log(
             "Ctrl+P palette | Ctrl+D diff | Ctrl+F focus | Ctrl+O verbose | Ctrl+T tasks | Ctrl+/ help | "
-            "Ctrl+K log | Ctrl+J input | Ctrl+S stream | Alt+Up/Down scroll log"
+            "Ctrl+K log | Ctrl+J input | Ctrl+S log | Alt+Up/Down scroll log"
         )
 
     def _show_tasks_panel(self) -> None:
@@ -674,9 +650,6 @@ class InteractiveShell:
             self.status_controller.stop_spinner("Waiting", "")
             return
         if etype == "stream_text":
-            text = str(event.get("text", ""))
-            if text:
-                self._schedule_ui(lambda t=text: self._update_stream_text(t))
             return
         if etype == "command_policy":
             line = f"policy[{event.get('outcome')}] bash @ {event.get('cwd')}: {event.get('reason')}"
@@ -687,11 +660,6 @@ class InteractiveShell:
             summary = str(event.get("summary", ""))
             self._schedule_ui(lambda: self._append_log(f"✎ Edit proposed: {proposal_id} — {summary}"))
 
-    def _update_stream_text(self, text: str) -> None:
-        self._live_stream_text += text
-        self.stream_area.text = self._live_stream_text
-        self.stream_area.buffer.cursor_position = len(self.stream_area.text)
-        self._invalidate_ui()
 
     def _note_file_read(self, path: str) -> None:
         if not path:
@@ -763,12 +731,12 @@ class InteractiveShell:
                     return source
         return ""
 
-    def _banner_text(self) -> StyleAndTextTuples:
+
+    def _append_startup_banner(self) -> None:
+        for line in self.LAUNCH_BANNER.splitlines():
+            self._append_log(line)
         model_name = getattr(self.runner, "model", "unknown")
-        return [
-            ("class:banner", self.LAUNCH_BANNER + "\n"),
-            ("class:banner.model", f"Model: {model_name}"),
-        ]
+        self._append_log(f"Model: {model_name}")
 
     def _is_area_scrolled_to_bottom(self, area: TextArea) -> bool:
         info = area.window.render_info if area.window else None

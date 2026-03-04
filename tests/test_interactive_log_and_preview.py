@@ -26,12 +26,13 @@ class DummyRunner:
         return {"response": {"content": [{"type": "text", "text": "ok"}]}}
 
 
-def test_banner_text_includes_model_line(tmp_path: Path) -> None:
+def test_startup_banner_appends_ascii_art_and_model_to_log(tmp_path: Path) -> None:
     shell = InteractiveShell(DummyRunner(), tmp_path)
-    banner = "".join(text for _style, text in shell._banner_text())
+    shell._append_startup_banner()
+    log_text = shell.log_area.buffer.text
 
-    assert "villani-fying your terminal" in banner
-    assert "Model:" in banner
+    assert "villani-fying your terminal" in log_text
+    assert "Model:" in log_text
 
 
 def test_append_log_uses_incremental_buffer_update(tmp_path: Path) -> None:
@@ -46,8 +47,7 @@ def test_append_log_uses_incremental_buffer_update(tmp_path: Path) -> None:
     assert "\n".join(shell.log_lines) == shell.log_area.buffer.text
 
 
-def test_log_and_stream_use_clickable_scrollbar_margins(tmp_path: Path) -> None:
+def test_log_uses_clickable_scrollbar_margin(tmp_path: Path) -> None:
     shell = InteractiveShell(DummyRunner(), tmp_path)
 
     assert any(isinstance(margin, ScrollbarMargin) for margin in shell.log_area.window.right_margins)
-    assert any(isinstance(margin, ScrollbarMargin) for margin in shell.stream_area.window.right_margins)
