@@ -8,12 +8,12 @@ __     ___ _ _             _    ____          _
    \_/  |_|_|_|\__,_|_| |_|_|  \____\___/ \__,_|\___|
 ```
 
-**Villani Code** is a serious terminal coding agent with deeply unserious branding.
+**Villani Code** is a terminal coding agent.
 It points at your repo, talks to a compatible model API, and plans plus executes tool calls (read, search, edit, bash, git, and more) to finish software tasks.
 
 Repo status: thoroughly Villanified.
 
-Practical automation, theatrical presentation.
+Practical automation, Villani presentation.
 
 ## What it does
 
