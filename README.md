@@ -8,7 +8,12 @@ __     ___ _ _             _    ____          _
    \_/  |_|_|_|\__,_|_| |_|_|  \____\___/ \__,_|\___|
 ```
 
-Villani Code is a terminal coding agent. You point it at a repository, connect it to a compatible model API, and it plans + executes tool calls (read, search, edit, bash, git, etc.) to complete software tasks.
+**Villani Code** is a serious terminal coding agent with deeply unserious branding.
+It points at your repo, talks to a compatible model API, and plans plus executes tool calls (read, search, edit, bash, git, and more) to finish software tasks.
+
+Repo status: thoroughly Villanified.
+
+Practical automation, theatrical presentation.
 
 ## What it does
 
@@ -18,7 +23,26 @@ Villani Code is a terminal coding agent. You point it at a repository, connect i
 - Applies a permission/approval policy before sensitive actions.
 - Stores checkpoints/transcripts under `.villani_code/` for traceability.
 
+Lightweight agent, heavyweight Villani.
+
+## Department of Villanification
+
+Official operating phrases for approved terminal gremlins:
+
+- Keep calm and Villanify the workspace.
+- Precision coding, reckless branding.
+- Local agent, global Villani.
+- Prompt first, ask questions never.
+- Terminal infused with Villani.
+- One more pass of Villani.
+- The terminal yearns for Villani.
+- Operated by advanced Villanistics.
+- Approved for controlled Villani exposure.
+- Warning: excessive Villani may improve morale.
+
 ## Install
+
+Install with a totally reasonable amount of Villani:
 
 ```bash
 python -m venv .venv
@@ -26,11 +50,15 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+Freshly Villanified and medically inadvisable.
+
 For development extras:
 
 ```bash
 pip install -e .[dev]
 ```
+
+Applied artisanal Villani by hand.
 
 ## API compatibility
 
@@ -38,6 +66,8 @@ Villani Code supports two provider styles:
 
 - `anthropic` (default): `POST {base_url}/v1/messages`
 - `openai`: `POST {base_url}/v1/chat/completions`
+
+Bringing order to chaos, then adding Villani back.
 
 Provider selection:
 
@@ -53,6 +83,8 @@ API key lookup:
 
 ## Core commands
 
+Villani at the command line.
+
 ### 1) Default interactive mode (no subcommand)
 
 When you run `villani-code` with no subcommand, interactive mode starts.
@@ -61,17 +93,23 @@ When you run `villani-code` with no subcommand, interactive mode starts.
 villani-code --base-url http://localhost:8000 --model local-model
 ```
 
+Your repo has been approached by Villani.
+
 ### 2) Explicit interactive mode
 
 ```bash
 villani-code interactive --base-url http://localhost:8000 --model local-model
 ```
 
+Interactive mode, now with irresponsible amounts of Villani.
+
 ### 3) One-shot run mode
 
 ```bash
 villani-code run "summarize this repo" --base-url http://localhost:8000 --model local-model
 ```
+
+One prompt in, one useful answer out, plus traces of theatrical panic.
 
 ### Common options
 
@@ -83,7 +121,11 @@ villani-code run "summarize this repo" --base-url http://localhost:8000 --model 
 - `--provider anthropic|openai`
 - `--api-key <token>`
 
+Code review with traces of Villani.
+
 ## Typical workflow (end-to-end)
+
+Now entering a high Villani environment.
 
 ```text
 1) Start Villani Code (interactive or run mode)
@@ -100,7 +142,11 @@ villani-code run "summarize this repo" --base-url http://localhost:8000 --model 
    - write transcript/checkpoint artifacts
 ```
 
+The clean room has been contaminated with Villani.
+
 ## Agent loop diagram
+
+A flowchart of disciplined logic and questionable vibes:
 
 ```text
 +-------------------+
@@ -157,11 +203,19 @@ villani-code run "summarize this repo" --base-url http://localhost:8000 --model 
 
 ## Interactive mode notes
 
+This is where the terminal theater actually happens:
+
 - Inline approval prompts appear when policy requires confirmation.
 - Streaming output is shown live.
 - Scrolling/follow behavior is built into the TUI.
 
+You drive. The agent improvises. The permission policy is the adult in the room.
+
+Prompt first, ask questions never.
+
 ## Useful additional commands
+
+Extensions, integrations, and controlled chaos:
 
 ```bash
 villani-code mcp list
@@ -174,10 +228,16 @@ villani-code plugin list
 villani-code plugin remove <name>
 ```
 
+Practical plugins, impractical swagger.
+
 ## Help
+
+For when you need less drama and more flags:
 
 ```bash
 villani-code --help
 villani-code run --help
 villani-code interactive --help
 ```
+
+Maximum Villani, minimum guesswork.
