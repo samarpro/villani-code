@@ -18,12 +18,12 @@
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
-**Villani Code** is an evil-themed terminal coding agent.
+**Villani Code** is an evil terminal coding agent.
 It points at your repo, talks to a compatible model API, and plans plus executes tool calls (read, search, edit, bash, git, and more) to finish software tasks.
 
-Repo status: thoroughly villainized.
+Repo status: thoroughly Villani.
 
-Practical automation, villainous presentation.
+Practical automation, Villani presentation.
 
 ## What it does
 
@@ -33,26 +33,26 @@ Practical automation, villainous presentation.
 - Applies a permission/approval policy before sensitive actions.
 - Stores checkpoints/transcripts under `.villani_code/` for traceability.
 
-Lightweight agent, heavyweight supervillain energy.
+Lightweight agent, heavyweight Villani energy.
 
-## Ministry of Villainy
+## Ministry of Villani
 
 Official operating phrases for approved terminal overlords:
 
 - Keep calm and dominate the workspace.
 - Precision coding, theatrical menace.
-- Local agent, global villain agenda.
+- Local agent, global Villani agenda.
 - Prompt first, ask questions never.
 - Terminal infused with lawful evil.
 - One more pass of strategic sabotage (of bad code).
-- The terminal yearns for villainy.
+- The terminal yearns for Villani.
 - Operated by advanced evil engineering.
 - Approved for controlled chaos.
-- Warning: excessive villainy may improve throughput.
+- Warning: excessive Villani may improve throughput.
 
 ## Install
 
-Install with a totally unreasonable amount of villainy:
+Install with a totally unreasonable amount of Villani:
 
 ```bash
 python -m venv .venv
@@ -60,7 +60,7 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-Freshly villainized and medically inadvisable.
+Freshly Villani and medically inadvisable.
 
 For development extras:
 
@@ -93,7 +93,7 @@ API key lookup:
 
 ## Core commands
 
-Villainy at the command line.
+Villani at the command line.
 
 ### 1) Default interactive mode (no subcommand)
 
@@ -162,7 +162,7 @@ Code review with traces of Villani.
 
 ## Typical workflow (end-to-end)
 
-Now entering a high-villainy environment.
+Now entering a high-Villani environment.
 
 ```text
 1) Start Villani Code (interactive or run mode)
@@ -265,7 +265,7 @@ villani-code plugin list
 villani-code plugin remove <name>
 ```
 
-Practical plugins, impractical villain swagger.
+Practical plugins, impractical Villani swagger.
 
 ## Help
 
@@ -277,4 +277,4 @@ villani-code run --help
 villani-code interactive --help
 ```
 
-Maximum villainy, minimum guesswork.
+Maximum Villani, minimum guesswork.
