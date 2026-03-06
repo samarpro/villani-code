@@ -3,16 +3,14 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import typer
 from rich.console import Console
 
 from villani_code.interrupts import InterruptController
 
-from villani_code.tui.components.settings import SettingsManager
 from villani_code.anthropic_client import AnthropicClient
-from villani_code.interactive import InteractiveShell
 from villani_code.openai_client import OpenAIClient
 from villani_code.plugins import PluginManager
 from villani_code.state import Runner
@@ -26,15 +24,34 @@ app.add_typer(mcp_app, name="mcp")
 app.add_typer(plugin_app, name="plugin")
 console = Console()
 
+def _load_settings_manager() -> Any | None:
+    try:
+        from villani_code.tui.components.settings import SettingsManager
+    except ModuleNotFoundError as exc:
+        if exc.name == "textual":
+            return None
+        raise
+    return SettingsManager
+
+
+def _load_interactive_shell() -> tuple[Any, type[Exception]]:
+    from villani_code.interactive import InteractiveShell, OptionalTUIDependencyError
+
+    return InteractiveShell, OptionalTUIDependencyError
+
 
 def _resolve_villani_flag(repo: Path, cli_value: bool | None) -> bool:
     if cli_value is not None:
         return cli_value
-    settings = SettingsManager(repo.resolve()).load()
+    settings_manager = _load_settings_manager()
+    if settings_manager is None:
+        return False
+    settings = settings_manager(repo.resolve()).load()
     return bool(getattr(settings, "villani_mode", False))
 
 
 def _build_runner(base_url: str, model: str, repo: Path, max_tokens: int, stream: bool, thinking: Optional[str], unsafe: bool, verbose: bool, extra_json: Optional[str], redact: bool, dangerously_skip_permissions: bool, auto_accept_edits: bool, plan_mode: Literal["off", "auto", "strict"], max_repair_attempts: int, small_model: bool, provider: Literal["anthropic", "openai"], api_key: Optional[str], villani_mode: bool = False, villani_objective: str | None = None) -> Runner:
+    client: Any
     if provider == "openai":
         resolved_api_key = api_key or os.environ.get("OPENAI_API_KEY")
         client = OpenAIClient(base_url=base_url, api_key=resolved_api_key)
@@ -52,13 +69,31 @@ def _build_runner(base_url: str, model: str, repo: Path, max_tokens: int, stream
 
 def _run_interactive(base_url: str, model: str, repo: Path, max_tokens: int, small_model: bool, provider: Literal["anthropic", "openai"], api_key: Optional[str], villani_mode: bool = False, villani_objective: str | None = None) -> None:
     runner = _build_runner(base_url, model, repo, max_tokens, True, None, False, False, None, False, False, False, "auto", 2, small_model, provider, api_key, villani_mode=villani_mode, villani_objective=villani_objective)
-    shell = InteractiveShell(runner, repo.resolve(), villani_mode=villani_mode, villani_objective=villani_objective)
+    try:
+        shell_cls, dependency_error = _load_interactive_shell()
+        shell = shell_cls(runner, repo.resolve(), villani_mode=villani_mode, villani_objective=villani_objective)
+    except ModuleNotFoundError as exc:
+        if exc.name == "textual":
+            raise typer.BadParameter(
+                "Interactive mode requires the optional TUI dependencies. Install with `pip install .[tui]` or `pip install villani-code[tui]`."
+            ) from exc
+        raise
+    except dependency_error as exc:
+        raise typer.BadParameter(str(exc)) from exc
     interrupts = InterruptController()
     while True:
         try:
             shell.run()
             interrupts.reset_interrupt_state()
             return
+        except ModuleNotFoundError as exc:
+            if exc.name == "textual":
+                raise typer.BadParameter(
+                    "Interactive mode requires the optional TUI dependencies. Install with `pip install .[tui]` or `pip install villani-code[tui]`."
+                ) from exc
+            raise
+        except dependency_error as exc:
+            raise typer.BadParameter(str(exc)) from exc
         except KeyboardInterrupt:
             action = interrupts.register_interrupt()
             if action == "exit":

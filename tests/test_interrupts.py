@@ -25,7 +25,7 @@ def test_run_interactive_exits_on_second_ctrl_c(monkeypatch, tmp_path) -> None:
             raise KeyboardInterrupt()
 
     monkeypatch.setattr(cli, "_build_runner", lambda *args, **kwargs: object())
-    monkeypatch.setattr(cli, "InteractiveShell", FakeShell)
+    monkeypatch.setattr(cli, "_load_interactive_shell", lambda: (FakeShell, RuntimeError))
 
     with pytest.raises(typer.Exit) as exc:
         cli._run_interactive("u", "m", tmp_path, 100, False, "anthropic", None)
@@ -47,7 +47,7 @@ def test_run_interactive_resets_interrupt_state_after_idle(monkeypatch, tmp_path
             return None
 
     monkeypatch.setattr(cli, "_build_runner", lambda *args, **kwargs: object())
-    monkeypatch.setattr(cli, "InteractiveShell", FakeShell)
+    monkeypatch.setattr(cli, "_load_interactive_shell", lambda: (FakeShell, RuntimeError))
 
     cli._run_interactive("u", "m", tmp_path, 100, False, "anthropic", None)
 

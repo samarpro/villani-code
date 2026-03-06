@@ -20,7 +20,6 @@ from villani_code.autonomy import (
     VerificationEngine,
     VerificationStatus,
 )
-from villani_code.evidence import parse_command_evidence
 from villani_code.execution import VILLANI_TASK_BUDGET
 from villani_code.shells import (
     baseline_import_validation_command,
@@ -775,80 +774,29 @@ class VillaniModeController:
         )
 
     def _extract_runner_failures(self, result: dict[str, Any]) -> list[str]:
-        failures: list[str] = []
-        for event in result.get("transcript", {}).get("events", []):
-            if event.get("type") != "failure_classified":
-                continue
-            category = str(event.get("category", "tool_failure"))
-            summary = str(event.get("summary", ""))
-            failures.append(f"{category}: {summary}".strip())
-        for tool_result in result.get("transcript", {}).get("tool_results", []):
-            if tool_result.get("is_error"):
-                failures.append(f"tool_failure: {tool_result.get('content', '')}"[:280])
-        return failures
+        from villani_code import autonomous_reporting
+
+        return autonomous_reporting.extract_runner_failures(result)
 
     def _extract_commands(self, result: dict[str, Any]) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
-        for tr in result.get("transcript", {}).get("tool_results", []):
-            for record in parse_command_evidence(str(tr.get("content", ""))):
-                out.append(
-                    {
-                        "command": str(record.get("command", "")).strip(),
-                        "exit": int(record.get("exit", 1)),
-                    }
-                )
-        return out
+        from villani_code import autonomous_reporting
+
+        return autonomous_reporting.extract_commands(result)
 
     def _build_takeover_summary(
         self, state: TakeoverState, done_reason: str
     ) -> dict[str, Any]:
-        current_changes = set(self._git_changed_files())
-        preexisting = sorted(self._preexisting_changes)
-        new_changes = sorted(current_changes - self._preexisting_changes)
-        intentional_set = {p for t in self.attempted for p in t.intentional_changes}
-        incidental_set = {p for t in self.attempted for p in t.incidental_changes}
-        return {
-            "repo_summary": state.repo_summary,
-            "tasks_attempted": [
-                {
-                    "id": t.task_id,
-                    "title": t.title,
-                    "status": t.status,
-                    "task_contract": t.task_contract,
-                    "attempts": t.attempts,
-                    "retries": t.retries,
-                    "reason": t.outcome[:1200],
-                    "verification": t.verification_results,
-                    "validation_artifacts": t.validation_artifacts,
-                    "inspection_summary": t.inspection_summary,
-                    "runner_failures": t.runner_failures,
-                    "produced_effect": t.produced_effect,
-                    "produced_validation": t.produced_validation,
-                    "produced_inspection_conclusion": t.produced_inspection_conclusion,
-                    "files_changed": t.files_changed,
-                    "intentional_changes": t.intentional_changes,
-                    "incidental_changes": t.incidental_changes,
-                    "terminated_reason": t.terminated_reason,
-                    "turns_used": t.turns_used,
-                    "tool_calls_used": t.tool_calls_used,
-                    "elapsed_seconds": t.elapsed_seconds,
-                    "completed": t.completed,
-                }
-                for t in self.attempted
-            ],
-            "files_changed": new_changes,
-            "preexisting_changes": preexisting,
-            "intentional_changes": sorted(intentional_set & set(new_changes)),
-            "incidental_changes": sorted(incidental_set & set(new_changes)),
-            "blockers": [
-                t.title
-                for t in self.attempted
-                if t.status == TaskLifecycle.BLOCKED.value
-            ],
-            "done_reason": done_reason,
-            "completed_waves": state.completed_waves,
-            "recommended_next_steps": self._recommended_next_steps(),
-            "working_memory": {
+        from villani_code import autonomous_reporting
+
+        return autonomous_reporting.build_takeover_summary(
+            state=state,
+            attempted=self.attempted,
+            current_changes=set(self._git_changed_files()),
+            preexisting_changes=self._preexisting_changes,
+            done_reason=done_reason,
+            recommended_next_steps_value=self._recommended_next_steps(),
+            blocked_value=TaskLifecycle.BLOCKED.value,
+            working_memory={
                 "satisfied_task_keys": self._satisfied_task_keys,
                 "invalidated_task_keys": sorted(self._invalidated_task_keys),
                 "backlog_insertions": self._backlog_insertions,
@@ -857,52 +805,31 @@ class VillaniModeController:
                 "stop_decision_rationale": self._stop_rationale,
                 "critic_outcomes": self._critic_outcomes,
             },
-        }
+        )
+
 
     def _detect_tooling_commands(self, files: list[str]) -> list[str]:
-        commands: list[str] = []
-        if any(f.startswith("tests/") for f in files):
-            commands.append("pytest -q")
-        return commands or ["git diff --stat"]
+        from villani_code import autonomous_reporting
+
+        return autonomous_reporting.detect_tooling_commands(files)
 
     def _todo_hits(self, files: list[str]) -> list[str]:
-        hits: list[str] = []
-        for rel in files:
-            if len(hits) >= 20:
-                break
-            if is_ignored_repo_path(rel):
-                continue
-            if not rel.endswith((".py", ".md", ".txt")):
-                continue
-            path = self.repo / rel
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for line in text.splitlines():
-                if "TODO" in line or "FIXME" in line:
-                    hits.append(f"{rel}: {line.strip()[:120]}")
-                    break
-        return hits
+        from villani_code import autonomous_reporting
+
+        return autonomous_reporting.todo_hits(self.repo, files)
 
     def _recommended_next_steps(self) -> list[str]:
-        if any(t.status == TaskLifecycle.BLOCKED.value for t in self.attempted):
-            return [
-                "Review blocked tasks and rerun with --unsafe only if trusted and necessary."
-            ]
-        if any(
-            t.status
-            in {
+        from villani_code import autonomous_reporting
+
+        return autonomous_reporting.recommended_next_steps(
+            self.attempted,
+            TaskLifecycle.BLOCKED.value,
+            {
                 TaskLifecycle.FAILED.value,
                 TaskLifecycle.RETRYABLE.value,
                 TaskLifecycle.EXHAUSTED.value,
-            }
-            for t in self.attempted
-        ):
-            return [
-                "Inspect verification findings, then rerun Villani mode with tighter wave limits."
-            ]
-        return ["Run full CI before merging autonomous changes."]
+            },
+        )
 
     def _repo_fingerprint_for_task(self, task_key: str) -> str:
         relevant: list[str] = []
