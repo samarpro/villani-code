@@ -10,8 +10,9 @@ from villani_code.autonomy import VerificationStatus
 from villani_code.edits import ProposalStore
 from villani_code.indexing import DEFAULT_IGNORE, RepoIndex
 from villani_code.live_display import apply_live_display_delta
-from villani_code.planning import PlanRiskLevel, generate_execution_plan
+from villani_code.planning import PlanRiskLevel, TaskMode, generate_execution_plan
 from villani_code.project_memory import SessionState, ensure_project_memory, load_repo_map, update_session_state
+from villani_code.context_governance import ContextCompactor, ContextInclusionReason, ContextExclusionReason
 from villani_code.prompting import build_system_blocks
 from villani_code.tools import execute_tool
 from villani_code.validation_loop import run_validation
@@ -28,6 +29,20 @@ def prepare_messages_for_model(runner: Any, messages: list[dict[str, Any]]) -> l
         inject_retrieval_briefing(runner, prepared)
         if runner._context_budget:
             prepared = runner._context_budget.compact(prepared)
+    inventory = runner._context_governance.load_inventory()
+    inventory.task_id = str(getattr(getattr(runner, "_execution_plan", None), "task_goal", "task"))[:80] or "task"
+    total_chars = sum(len(str(m.get("content", ""))) for m in prepared)
+    runner._context_governance.register_item(
+        inventory,
+        "messages.active",
+        "messages",
+        "prepared conversation messages",
+        total_chars,
+        ContextInclusionReason.TASK_RELEVANCE,
+        "messages needed for current turn",
+    )
+    runner._context_governance.prune_for_budget(inventory)
+    runner._context_governance.save_inventory(inventory)
     return prepared
 
 
@@ -326,6 +341,7 @@ def _build_session_state_from_plan(instruction: str, plan: Any) -> SessionState:
         action_classes=list(plan.action_classes),
         estimated_scope=plan.estimated_scope,
         change_impact=str(getattr(plan, "change_impact", "source_only")),
+        task_mode=str(getattr(plan, "task_mode", TaskMode.GENERAL.value)),
         candidate_targets_summary=[str(v.get("target", "")) for v in getattr(plan, "candidate_targets", [])[:8]],
         validation_plan_summary=list(plan.validation_steps[:6]),
         outcome_status="planned",
@@ -352,6 +368,31 @@ def ensure_project_memory_and_plan(runner: Any, instruction: str) -> None:
 
     plan = generate_execution_plan(instruction, runner.repo, repo_map, validation_steps)
     runner._execution_plan = plan
+    inventory = runner._context_governance.load_inventory()
+    inventory.task_id = instruction[:80] or "task"
+    runner._context_governance.register_item(
+        inventory,
+        ".villani/repo_map.json",
+        "memory",
+        "repo map loaded",
+        len(json.dumps(repo_map)),
+        ContextInclusionReason.MEMORY_SIGNAL,
+        "planning requires repo memory",
+    )
+    runner._context_governance.register_item(
+        inventory,
+        ".villani/validation.json",
+        "memory",
+        "validation config loaded",
+        sum(len(v) for v in validation_steps),
+        ContextInclusionReason.MEMORY_SIGNAL,
+        "planning requires validation hints",
+    )
+    stale = runner._context_governance.detect_stale_context(inventory, plan.task_mode, 0)
+    for sig in stale:
+        runner._context_governance.exclude_candidate(inventory, f"stale:{sig}", "stale", sig, 120, ContextExclusionReason.STALE, "stale context detected")
+    runner._context_governance.prune_for_budget(inventory)
+    runner._context_governance.save_inventory(inventory)
     runner.event_callback({"type": "plan_generated", "plan": plan.to_dict(), "human": plan.to_human_text()})
     runner.event_callback({"type": "plan_risk_rationale", "risk": plan.risk_level.value, "drivers": plan.risk_assessment.get("drivers", [])})
 
@@ -396,15 +437,35 @@ def run_post_execution_validation(runner: Any, changed_files: list[str]) -> str:
     repo_map = load_repo_map(runner.repo)
 
     runner.event_callback({"type": "validation_started", "changed_files": changed_files})
-    result = run_validation(runner.repo, changed_files, event_callback=runner.event_callback, repo_map=repo_map, change_impact=plan_impact, action_classes=plan_actions)
+    task_mode = str(getattr(plan, "task_mode", TaskMode.GENERAL.value))
+    result = run_validation(runner.repo, changed_files, event_callback=runner.event_callback, repo_map=repo_map, change_impact=plan_impact, action_classes=plan_actions, task_mode=task_mode)
     runner.event_callback({
         "type": "validation_plan_selected",
         "steps": [s.step.name for s in result.plan.selected_steps],
         "reasons": [r.reason for r in result.plan.reasons[:6]],
         "escalation": result.plan.escalation.reason,
     })
+    inventory = runner._context_governance.load_inventory()
+    compact_validation = ContextCompactor.compact_validation_logs(result.failure_summary if not result.passed else "Validation passed")
+    inventory.compactions.append(compact_validation)
+    runner._context_governance.register_item(
+        inventory,
+        "validation.summary",
+        "validation",
+        "latest validation summary",
+        compact_validation.compacted_units,
+        ContextInclusionReason.VALIDATION_SIGNAL,
+        "validation outcomes affect next step",
+    )
+    stale = runner._context_governance.detect_stale_context(inventory, task_mode, len(getattr(result, "steps", [])))
+    if stale:
+        runner.event_callback({"type": "context_stale_detected", "signals": stale})
+    runner._context_governance.prune_for_budget(inventory)
+    runner._context_governance.save_inventory(inventory)
 
     if result.passed:
+        checkpoint = runner._context_governance.create_checkpoint(inventory, str(getattr(plan, "task_goal", "")), ["validation passed"])
+        runner.event_callback({"type": "context_checkpoint_created", "checkpoint_id": checkpoint.checkpoint_id, "reason": "validation_passed"})
         update_session_state(runner.repo, SessionState(
             affected_files=changed_files,
             validation_plan_summary=[s.step.name for s in result.plan.selected_steps],
@@ -426,6 +487,8 @@ def run_post_execution_validation(runner: Any, changed_files: list[str]) -> str:
         max_attempts=int(getattr(runner, "max_repair_attempts", 2)),
     )
     if outcome.recovered:
+        checkpoint = runner._context_governance.create_checkpoint(inventory, str(getattr(plan, "task_goal", "")), ["validation passed after repair"])
+        runner.event_callback({"type": "context_checkpoint_created", "checkpoint_id": checkpoint.checkpoint_id, "reason": "repair_recovered"})
         update_session_state(runner.repo, SessionState(
             affected_files=changed_files,
             validation_plan_summary=[s.step.name for s in result.plan.selected_steps],
@@ -437,6 +500,8 @@ def run_post_execution_validation(runner: Any, changed_files: list[str]) -> str:
         ))
         return outcome.message
 
+    checkpoint = runner._context_governance.create_checkpoint(inventory, str(getattr(plan, "task_goal", "")), ["repair attempts exhausted"])
+    runner.event_callback({"type": "context_checkpoint_created", "checkpoint_id": checkpoint.checkpoint_id, "reason": "repair_exhausted"})
     update_session_state(runner.repo, SessionState(
         affected_files=changed_files,
         validation_plan_summary=[s.step.name for s in result.plan.selected_steps],

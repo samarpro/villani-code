@@ -48,6 +48,15 @@ class ChangeImpact(str, Enum):
     REPO_WIDE_BEHAVIOR = "repo_wide_behavior"
 
 
+class TaskMode(str, Enum):
+    FIX_FAILING_TEST = "fix_failing_test"
+    FIX_LINT_OR_TYPE = "fix_lint_or_type"
+    NARROW_REFACTOR = "narrow_refactor"
+    DOCS_UPDATE_SAFE = "docs_update_safe"
+    INSPECT_AND_PLAN = "inspect_and_plan"
+    GENERAL = "general"
+
+
 @dataclass(slots=True)
 class CandidateTarget:
     target: str
@@ -108,6 +117,7 @@ class ExecutionPlan:
     candidate_targets: list[dict[str, Any]] = field(default_factory=list)
     grounding_evidence: dict[str, Any] = field(default_factory=dict)
     risk_assessment: dict[str, Any] = field(default_factory=dict)
+    task_mode: str = TaskMode.GENERAL.value
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -343,6 +353,7 @@ def generate_execution_plan(instruction: str, repo: Path, repo_map: dict[str, An
     _ = repo
     text = instruction.strip()
     analysis = analyze_instruction(text, repo_map, validation_steps)
+    mode = classify_task_mode(text)
     risk = classify_plan_risk(text, analysis)
     risk_assessment = _risk_assessment(analysis, risk)
 
@@ -370,7 +381,23 @@ def generate_execution_plan(instruction: str, repo: Path, repo_map: dict[str, An
         candidate_targets=[asdict(c) for c in analysis.candidate_targets],
         grounding_evidence=asdict(analysis.grounding_evidence),
         risk_assessment={"risk_level": risk_assessment.risk_level.value, "drivers": risk_assessment.drivers},
+        task_mode=mode.value,
     )
+
+
+def classify_task_mode(instruction: str) -> TaskMode:
+    text = instruction.lower()
+    if "failing test" in text or ("fix" in text and "test" in text):
+        return TaskMode.FIX_FAILING_TEST
+    if any(term in text for term in ("lint", "mypy", "type error", "typecheck", "ruff")):
+        return TaskMode.FIX_LINT_OR_TYPE
+    if "refactor" in text:
+        return TaskMode.NARROW_REFACTOR
+    if "docs" in text or "readme" in text:
+        return TaskMode.DOCS_UPDATE_SAFE
+    if any(term in text for term in ("inspect", "plan", "no edits", "read-only")):
+        return TaskMode.INSPECT_AND_PLAN
+    return TaskMode.GENERAL
 
 
 def compact_failure_output(output: str, max_lines: int = 24, max_chars: int = 1800) -> str:

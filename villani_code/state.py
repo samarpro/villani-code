@@ -17,6 +17,7 @@ from villani_code.autonomy import (
 )
 from villani_code.checkpoints import CheckpointManager
 from villani_code.context_budget import ContextBudget
+from villani_code.context_governance import ContextGovernanceManager
 from villani_code.edits import ProposalStore
 from villani_code.evidence import normalize_artifact, parse_command_evidence
 from villani_code.execution import ExecutionBudget, ExecutionResult
@@ -142,6 +143,7 @@ class Runner:
         self._last_verification_intentional: set[str] = set()
         self._last_verification_artifact_count = 0
         self._failure_classifier = FailureClassifier()
+        self._context_governance = ContextGovernanceManager(self.repo)
         self._verification_engine = VerificationEngine(self.repo)
         if self.small_model:
             self._init_small_model_support()

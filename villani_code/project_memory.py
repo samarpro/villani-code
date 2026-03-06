@@ -150,6 +150,7 @@ class SessionState:
     action_classes: list[str] = field(default_factory=list)
     estimated_scope: str = ""
     change_impact: str = ""
+    task_mode: str = "general"
     candidate_targets_summary: list[str] = field(default_factory=list)
     affected_files: list[str] = field(default_factory=list)
     validation_plan_summary: list[str] = field(default_factory=list)

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from villani_code.planning import ActionClass, ChangeImpact, compact_failure_output
+from villani_code.planning import ActionClass, ChangeImpact, TaskMode, compact_failure_output
 from villani_code.project_memory import ValidationConfig, ValidationStep, load_repo_map, load_validation_config
 
 
@@ -187,7 +187,7 @@ def _impact_from_inputs(scope: ValidationScope, change_impact: str | None, actio
     return ChangeImpact.SOURCE_ONLY
 
 
-def plan_validation(config: ValidationConfig, changed_files: list[str], repo_map: dict[str, Any] | None = None, change_impact: str | None = None, action_classes: list[str] | None = None) -> ValidationPlan:
+def plan_validation(config: ValidationConfig, changed_files: list[str], repo_map: dict[str, Any] | None = None, change_impact: str | None = None, action_classes: list[str] | None = None, task_mode: str = TaskMode.GENERAL.value) -> ValidationPlan:
     scope = infer_validation_scope(changed_files)
     enabled = sorted([s for s in config.steps if s.enabled], key=_step_order)
     impact = _impact_from_inputs(scope, change_impact, action_classes)
@@ -209,11 +209,42 @@ def plan_validation(config: ValidationConfig, changed_files: list[str], repo_map
                 include(step, "No changed files: run only cheap sanity checks.")
         return ValidationPlan(scope, selected, reasons, targets, ValidationEscalationPolicy(False, False, "no_changes"))
 
-    if scope.docs_only:
+    if scope.docs_only or task_mode == TaskMode.DOCS_UPDATE_SAFE.value:
         for step in enabled:
             if step.kind in {"format", "lint", "inspection"}:
-                include(step, "Docs-only changes: skip code-heavy checks.")
+                include(step, "Docs-only mode: skip code-heavy checks.")
         return ValidationPlan(scope, selected, reasons, targets, ValidationEscalationPolicy(False, False, "docs_only"))
+
+
+    if task_mode == TaskMode.FIX_FAILING_TEST.value:
+        for step in enabled:
+            if step.kind == "test":
+                include(step, "Task mode fix_failing_test: run nearby tests first.")
+                break
+        return ValidationPlan(scope, selected, reasons, targets, ValidationEscalationPolicy(True, False, "test_targeted_first"))
+
+    if task_mode == TaskMode.FIX_LINT_OR_TYPE.value:
+        for step in enabled:
+            if step.kind in {"lint", "typecheck", "format"}:
+                include(step, "Task mode fix_lint_or_type: prioritize static checks.")
+        return ValidationPlan(scope, selected, reasons, targets, ValidationEscalationPolicy(False, False, "static_checks_first"))
+
+    if task_mode == TaskMode.NARROW_REFACTOR.value:
+        for step in enabled:
+            if step.kind in {"lint", "typecheck"}:
+                include(step, "Task mode narrow_refactor: package-local checks first.")
+        if targets:
+            for step in enabled:
+                if step.kind == "test":
+                    include(step, "Task mode narrow_refactor: nearby tests.")
+                    break
+        return ValidationPlan(scope, selected, reasons, targets, ValidationEscalationPolicy(True, False, "narrow_refactor_targeted"))
+
+    if task_mode == TaskMode.INSPECT_AND_PLAN.value:
+        for step in enabled:
+            if step.kind == "inspection":
+                include(step, "Inspect-and-plan mode: no write-phase validation.")
+        return ValidationPlan(scope, selected, reasons, targets, ValidationEscalationPolicy(False, False, "inspect_only"))
 
     force_broad = impact in {ChangeImpact.CONFIG_ONLY, ChangeImpact.DEPENDENCY_SURFACE, ChangeImpact.PACKAGE_WIDE_BEHAVIOR, ChangeImpact.REPO_WIDE_BEHAVIOR} or scope.dependency_changed
 
@@ -268,10 +299,10 @@ def summarize_validation_failure(step_name: str, stdout: str, stderr: str) -> Va
     )
 
 
-def run_validation(repo: Path, changed_files: list[str], event_callback: Any | None = None, steps_override: list[str] | None = None, repo_map: dict[str, Any] | None = None, change_impact: str | None = None, action_classes: list[str] | None = None) -> ValidationResult:
+def run_validation(repo: Path, changed_files: list[str], event_callback: Any | None = None, steps_override: list[str] | None = None, repo_map: dict[str, Any] | None = None, change_impact: str | None = None, action_classes: list[str] | None = None, task_mode: str = TaskMode.GENERAL.value) -> ValidationResult:
     cfg = load_validation_config(repo)
     repo_map = repo_map or load_repo_map(repo)
-    plan = plan_validation(cfg, changed_files, repo_map=repo_map, change_impact=change_impact, action_classes=action_classes)
+    plan = plan_validation(cfg, changed_files, repo_map=repo_map, change_impact=change_impact, action_classes=action_classes, task_mode=task_mode)
 
     if steps_override:
         allowed = set(steps_override)
