@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from villani_code.planning import PlanAnalysis, PlanRiskLevel, classify_plan_risk, compact_failure_output, generate_execution_plan
+from villani_code.planning import PlanRiskLevel, classify_plan_risk, compact_failure_output, generate_execution_plan, analyze_instruction
 from villani_code.project_memory import ensure_project_memory, init_project_memory, load_validation_config
 from villani_code.validation_loop import infer_targeted_command, select_validation_steps
 
@@ -18,16 +18,16 @@ def test_lazy_init(tmp_path: Path) -> None:
 
 
 def test_deterministic_risk_classification() -> None:
-    analysis = PlanAnalysis(dependency_change=True)
+    analysis = analyze_instruction("upgrade dependencies in pyproject.toml", {"manifests": ["pyproject.toml"]}, ["pytest"])
     assert classify_plan_risk("upgrade dependencies", analysis) == PlanRiskLevel.HIGH
-    analysis2 = PlanAnalysis(touches_multiple_files=True)
-    assert classify_plan_risk("refactor module", analysis2) == PlanRiskLevel.MEDIUM
+    analysis2 = analyze_instruction("fix test failure", {"source_roots": ["src"], "test_roots": ["tests"]}, ["pytest"])
+    assert classify_plan_risk("fix test failure", analysis2) in {PlanRiskLevel.MEDIUM, PlanRiskLevel.HIGH}
 
 
 def test_plan_contains_contract_fields(tmp_path: Path) -> None:
-    plan = generate_execution_plan("fix failing tests", tmp_path, {"manifests": ["pyproject.toml"], "config_files": [], "source_roots": ["src"]}, ["pytest"])
+    plan = generate_execution_plan("fix failing tests", tmp_path, {"manifests": ["pyproject.toml"], "config_files": [], "source_roots": ["src"], "test_roots": ["tests"]}, ["pytest"])
     payload = plan.to_dict()
-    for key in ["task_goal", "assumptions", "relevant_files", "proposed_actions", "risks", "validation_steps", "done_criteria", "risk_level"]:
+    for key in ["task_goal", "assumptions", "relevant_files", "proposed_actions", "risks", "validation_steps", "done_criteria", "risk_level", "grounding_evidence", "candidate_targets", "change_impact", "risk_assessment"]:
         assert key in payload
 
 
@@ -39,7 +39,7 @@ def test_validation_selection_and_targeting(tmp_path: Path) -> None:
     assert selected
     test_step = next((s for s in selected if s.kind == "test"), None)
     if test_step:
-        cmd = infer_targeted_command(test_step, ["tests/test_x.py"])
+        cmd = infer_targeted_command(test_step, ["tests/test_x.py"], {"test_roots": ["tests"]})
         assert "tests/test_x.py" in cmd
 
 

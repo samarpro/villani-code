@@ -172,8 +172,8 @@ villani-code init --repo .
 This creates deterministic compact state under `.villani/`:
 - `project_rules.md` (derived from detected tools/layout, not generic templates)
 - `validation.json` (typed validation steps with cost, scope, and targeting strategy metadata)
-- `repo_map.json` (languages, roots, manifests/configs, entrypoints, repo shape, module relationships)
-- `session_state.json` (compact checkpoint fields for task, plan risk/scope, validation/repair outcomes)
+- `repo_map.json` (languages/frameworks, source/test/package roots, manifests/lockfiles/configs, entrypoints, build/CI hints, source↔test patterns)
+- `session_state.json` (compact checkpoint fields for plan evidence/impact, validation plan summary, repair attempts, and handoff hints)
 
 Lazy init is also enabled: if `.villani/` is missing when a task starts, Villani initializes it before planning.
 
@@ -188,7 +188,7 @@ Lazy init is also enabled: if `.villani/` is missing when a task starts, Villani
 
 Useful options:
 - `--plan-mode/--no-plan-mode`
-- `--plan-policy off|auto|strict`
+- `--plan-policy off|auto|strict` (controls approval strictness)
 - `--skip-plan` (expert override)
 - `--max-repair-attempts N`
 

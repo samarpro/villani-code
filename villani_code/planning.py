@@ -21,34 +21,69 @@ class ActionClass(str, Enum):
     DEPENDENCY_CHANGE = "dependency_change"
     MIGRATION = "migration"
     TEST_REPAIR = "test_repair"
-    BROAD_REFACTOR = "broad_refactor"
+    REFACTOR_NARROW = "refactor_narrow"
+    REFACTOR_BROAD = "refactor_broad"
     SHELL_READ_ONLY = "shell_read_only"
     SHELL_MUTATING = "shell_mutating"
-    DESTRUCTIVE_OPERATION = "destructive_operation"
+    GIT_SAFE = "git_safe"
+    GIT_DESTRUCTIVE = "git_destructive"
+    FILE_DELETE_OR_MOVE = "file_delete_or_move"
 
 
 class EstimatedScope(str, Enum):
     SINGLE_FILE = "single_file"
     NARROW_MULTI_FILE = "narrow_multi_file"
     BROAD_MULTI_FILE = "broad_multi_file"
+    PACKAGE_WIDE = "package_wide"
     REPO_WIDE = "repo_wide"
+
+
+class ChangeImpact(str, Enum):
+    SOURCE_ONLY = "source_only"
+    TESTS_ONLY = "tests_only"
+    SOURCE_AND_TESTS = "source_and_tests"
+    CONFIG_OR_MANIFEST = "config_or_manifest"
+    MULTI_PACKAGE = "multi_package"
+    CROSS_CUTTING = "cross_cutting"
+
+
+@dataclass(slots=True)
+class CandidateTarget:
+    target: str
+    target_type: str
+    evidence: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class PlanningEvidence:
+    matched_terms: list[str] = field(default_factory=list)
+    matched_paths: list[str] = field(default_factory=list)
+    source_roots: list[str] = field(default_factory=list)
+    test_roots: list[str] = field(default_factory=list)
+    manifests: list[str] = field(default_factory=list)
+    configs: list[str] = field(default_factory=list)
+    repo_shape: str = "unknown"
+    explicit_signals: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class RiskAssessment:
+    risk_level: PlanRiskLevel
+    drivers: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class PlanAnalysis:
-    candidate_targets: list[str] = field(default_factory=list)
+    candidate_targets: list[CandidateTarget] = field(default_factory=list)
     action_classes: list[ActionClass] = field(default_factory=list)
     estimated_scope: EstimatedScope = EstimatedScope.SINGLE_FILE
+    change_impact: ChangeImpact = ChangeImpact.SOURCE_ONLY
+    grounding_evidence: PlanningEvidence = field(default_factory=PlanningEvidence)
     confidence_score: float = 0.5
     rationale: list[str] = field(default_factory=list)
-
-    # backwards compatibility with existing unit tests that construct PlanAnalysis manually
-    touches_multiple_files: bool = False
-    dependency_change: bool = False
-    migration_like: bool = False
-    refactor_like: bool = False
-    test_fix_requires_edits: bool = False
-    destructive_shell: bool = False
+    requires_write_phase: bool = False
+    requires_validation_phase: bool = False
+    non_trivial: bool = False
 
 
 @dataclass(slots=True)
@@ -68,6 +103,10 @@ class ExecutionPlan:
     confidence_score: float = 0.5
     requires_write_phase: bool = False
     requires_validation_phase: bool = False
+    change_impact: str = ChangeImpact.SOURCE_ONLY.value
+    candidate_targets: list[dict[str, Any]] = field(default_factory=list)
+    grounding_evidence: dict[str, Any] = field(default_factory=dict)
+    risk_assessment: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -75,249 +114,245 @@ class ExecutionPlan:
         return payload
 
     def to_human_text(self) -> str:
-        parts = [
-            "Execution plan:",
-            f"- task_goal: {self.task_goal}",
-            f"- risk_level: {self.risk_level.value}",
-            f"- non_trivial: {self.non_trivial}",
-            f"- estimated_scope: {self.estimated_scope}",
-            f"- confidence_score: {self.confidence_score:.2f}",
-            f"- action_classes: {', '.join(self.action_classes) if self.action_classes else 'none'}",
-            f"- assumptions: {', '.join(self.assumptions) if self.assumptions else 'none'}",
-            f"- relevant_files: {', '.join(self.relevant_files) if self.relevant_files else 'none'}",
-            "- rationale:",
-        ]
-        parts.extend(f"  - {r}" for r in self.rationale[:8])
-        parts.append("- proposed_actions:")
-        parts.extend(f"  - {a}" for a in self.proposed_actions)
-        parts.append("- risks:")
-        parts.extend(f"  - {r}" for r in self.risks)
-        parts.append("- validation_steps:")
-        parts.extend(f"  - {v}" for v in self.validation_steps)
-        parts.append("- done_criteria:")
-        parts.extend(f"  - {d}" for d in self.done_criteria)
-        return "\n".join(parts)
+        return "\n".join(
+            [
+                "Execution plan:",
+                f"- task_goal: {self.task_goal}",
+                f"- risk_level: {self.risk_level.value}",
+                f"- risk_drivers: {', '.join(self.risk_assessment.get('drivers', [])) or 'none'}",
+                f"- estimated_scope: {self.estimated_scope}",
+                f"- change_impact: {self.change_impact}",
+                f"- confidence_score: {self.confidence_score:.2f}",
+                f"- action_classes: {', '.join(self.action_classes) if self.action_classes else 'none'}",
+                f"- relevant_files: {', '.join(self.relevant_files) if self.relevant_files else 'none'}",
+                "- rationale:",
+                *[f"  - {r}" for r in self.rationale[:10]],
+            ]
+        )
 
 
-def _tokenize_instruction(text: str) -> set[str]:
+def _tokenize(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9_./-]+", text.lower()))
 
 
-def _normalize_path(path: str) -> str:
+def _normalize(path: str) -> str:
     return path.replace("\\", "/").lstrip("./")
 
 
-def _scope_from_targets(targets: list[str]) -> EstimatedScope:
-    if not targets:
-        return EstimatedScope.SINGLE_FILE
-    if len(targets) == 1:
-        return EstimatedScope.SINGLE_FILE
-    dirs = {t.split("/")[0] for t in targets if "/" in t}
-    if len(targets) <= 3 and len(dirs) <= 2:
-        return EstimatedScope.NARROW_MULTI_FILE
-    if len(targets) <= 8:
-        return EstimatedScope.BROAD_MULTI_FILE
-    return EstimatedScope.REPO_WIDE
-
-
-def analyze_instruction(
-    instruction: str,
-    repo_map: dict[str, Any] | None,
-    validation_steps: list[str] | None,
-) -> PlanAnalysis:
-    text = instruction.strip().lower()
-    tokens = _tokenize_instruction(text)
-    repo_map = repo_map or {}
-
-    manifests = [_normalize_path(p) for p in repo_map.get("manifests", [])]
-    config_files = [_normalize_path(p) for p in repo_map.get("config_files", [])]
-    source_roots = [_normalize_path(p) for p in repo_map.get("source_roots", [])]
-    test_roots = [_normalize_path(p) for p in repo_map.get("test_roots", [])]
-
-    candidate_targets: list[str] = []
-    rationale: list[str] = []
-
-    for path in manifests + config_files:
-        filename = path.split("/")[-1].lower()
-        stem = filename.split(".")[0]
-        if filename in text or stem in tokens:
-            candidate_targets.append(path)
-            rationale.append(f"Instruction explicitly references {path}.")
-
-    for root in source_roots + test_roots:
-        if root.lower() in tokens or f"{root}/" in text:
-            candidate_targets.append(root)
-            rationale.append(f"Instruction references root '{root}'.")
-
-    if "docs" in tokens or "readme" in tokens:
-        candidate_targets.extend([p for p in repo_map.get("docs_roots", [])][:2])
-        rationale.append("Documentation terms detected in instruction.")
-
-    action_classes: set[ActionClass] = set()
-    destructive_tokens = {"rm", "rm -rf", "reset", "rebase", "force-push", "drop", "delete"}
-    if any(token in text for token in destructive_tokens):
-        action_classes.add(ActionClass.DESTRUCTIVE_OPERATION)
-        rationale.append("Destructive shell/git operation terms detected.")
-
-    if {"inspect", "review", "analyze", "summarize"} & tokens:
-        action_classes.add(ActionClass.READ_ONLY)
+def _infer_action_classes(text: str, tokens: set[str]) -> set[ActionClass]:
+    actions: set[ActionClass] = set()
+    if {"inspect", "review", "explain", "summarize"} & tokens:
+        actions.add(ActionClass.READ_ONLY)
+    if {"fix", "edit", "implement", "patch", "change"} & tokens:
+        actions.add(ActionClass.CODE_EDIT)
+    if {"config", "setting", "yaml", "toml", "ini", "json"} & tokens:
+        actions.add(ActionClass.CONFIG_EDIT)
+    if {"dependency", "dependencies", "lockfile", "requirements", "pyproject", "package.json"} & tokens:
+        actions.add(ActionClass.DEPENDENCY_CHANGE)
+    if {"migration", "migrate", "schema", "alembic"} & tokens:
+        actions.add(ActionClass.MIGRATION)
+    if {"test", "pytest", "failing"} & tokens and {"fix", "repair", "pass"} & tokens:
+        actions.add(ActionClass.TEST_REPAIR)
+    if "refactor" in tokens:
+        actions.add(ActionClass.REFACTOR_BROAD)
+    if {"rename", "move", "delete", "remove"} & tokens:
+        actions.add(ActionClass.FILE_DELETE_OR_MOVE)
     if {"bash", "shell", "command"} & tokens:
-        action_classes.add(ActionClass.SHELL_READ_ONLY)
-    if {"edit", "change", "implement", "fix", "patch", "refactor"} & tokens:
-        action_classes.add(ActionClass.CODE_EDIT)
-    if {"config", "setting", "settings", "ini", "toml", "yaml", "json"} & tokens:
-        action_classes.add(ActionClass.CONFIG_EDIT)
-    if {"dependency", "dependencies", "requirements", "lockfile", "pyproject", "package.json"} & tokens:
-        action_classes.add(ActionClass.DEPENDENCY_CHANGE)
-        candidate_targets.extend(manifests)
-        rationale.append("Dependency-related instruction terms align with repository manifests.")
-    if {"migrate", "migration", "schema", "alembic", "database"} & tokens:
-        action_classes.add(ActionClass.MIGRATION)
-    if {"test", "tests", "pytest", "failing"} & tokens and {"fix", "repair", "pass"} & tokens:
-        action_classes.add(ActionClass.TEST_REPAIR)
-    if {"refactor", "rename", "restructure"} & tokens:
-        action_classes.add(ActionClass.BROAD_REFACTOR)
+        actions.add(ActionClass.SHELL_READ_ONLY)
+    if {"git", "commit", "status", "diff"} & tokens:
+        actions.add(ActionClass.GIT_SAFE)
+    if any(term in text for term in ["reset --hard", "rebase", "force-push", "rm -rf"]):
+        actions.add(ActionClass.GIT_DESTRUCTIVE)
+    if not actions:
+        actions.add(ActionClass.READ_ONLY)
+    return actions
 
-    if not action_classes:
-        action_classes.add(ActionClass.READ_ONLY)
 
-    if ActionClass.READ_ONLY in action_classes and len(action_classes) > 1:
-        action_classes.discard(ActionClass.READ_ONLY)
+def _scope(targets: list[str], actions: set[ActionClass], repo_shape: str) -> EstimatedScope:
+    if ActionClass.REFACTOR_BROAD in actions or ActionClass.GIT_DESTRUCTIVE in actions:
+        return EstimatedScope.REPO_WIDE
+    if ActionClass.MIGRATION in actions:
+        return EstimatedScope.PACKAGE_WIDE
+    if len(targets) <= 1:
+        return EstimatedScope.SINGLE_FILE
+    if len(targets) <= 4:
+        return EstimatedScope.NARROW_MULTI_FILE
+    if repo_shape == "multi_root":
+        return EstimatedScope.PACKAGE_WIDE
+    return EstimatedScope.BROAD_MULTI_FILE
 
-    targets = sorted(dict.fromkeys([t for t in candidate_targets if t]))
-    if not targets:
-        targets = sorted(dict.fromkeys((manifests + source_roots + test_roots + config_files)[:6]))
-        rationale.append("No explicit path mention; using high-signal roots/manifests from repo map.")
 
-    estimated_scope = _scope_from_targets(targets)
-    if ActionClass.BROAD_REFACTOR in action_classes:
-        estimated_scope = max(estimated_scope, EstimatedScope.BROAD_MULTI_FILE, key=lambda s: list(EstimatedScope).index(s))
-    if ActionClass.DEPENDENCY_CHANGE in action_classes or ActionClass.MIGRATION in action_classes:
-        estimated_scope = max(estimated_scope, EstimatedScope.NARROW_MULTI_FILE, key=lambda s: list(EstimatedScope).index(s))
+def _infer_change_impact(actions: set[ActionClass], targets: list[CandidateTarget], repo_map: dict[str, Any]) -> ChangeImpact:
+    types = {t.target_type for t in targets}
+    source_roots = set(repo_map.get("source_roots", []))
+    if ActionClass.DEPENDENCY_CHANGE in actions or "manifest" in types or "config" in types:
+        return ChangeImpact.CONFIG_OR_MANIFEST
+    if "test" in types and "source" not in types:
+        return ChangeImpact.TESTS_ONLY
+    if "source" in types and "test" in types:
+        return ChangeImpact.SOURCE_AND_TESTS
+    roots_touched = {t.target.split("/")[0] for t in targets if "/" in t.target}
+    if len(roots_touched & source_roots) > 1:
+        return ChangeImpact.MULTI_PACKAGE
+    if ActionClass.REFACTOR_BROAD in actions or ActionClass.MIGRATION in actions:
+        return ChangeImpact.CROSS_CUTTING
+    return ChangeImpact.SOURCE_ONLY
+
+
+def analyze_instruction(instruction: str, repo_map: dict[str, Any] | None, validation_steps: list[str] | None) -> PlanAnalysis:
+    text = instruction.strip().lower()
+    tokens = _tokenize(text)
+    repo_map = repo_map or {}
+    manifests = [_normalize(v) for v in repo_map.get("manifests", []) + repo_map.get("lockfiles", [])]
+    configs = [_normalize(v) for v in repo_map.get("config_files", [])]
+    source_roots = [_normalize(v) for v in repo_map.get("source_roots", [])]
+    test_roots = [_normalize(v) for v in repo_map.get("test_roots", [])]
+    docs_roots = [_normalize(v) for v in repo_map.get("docs_roots", [])]
+
+    candidates: dict[str, CandidateTarget] = {}
+
+    def add_candidate(path: str, target_type: str, reason: str) -> None:
+        key = _normalize(path)
+        row = candidates.get(key)
+        if row is None:
+            row = CandidateTarget(target=key, target_type=target_type, evidence=[])
+            candidates[key] = row
+        if reason not in row.evidence:
+            row.evidence.append(reason)
+
+    for path in manifests:
+        name = Path(path).name.lower()
+        if name in text or name.split(".")[0] in tokens:
+            add_candidate(path, "manifest", f"instruction mentions {name}")
+    for path in configs:
+        name = Path(path).name.lower()
+        if name in text:
+            add_candidate(path, "config", f"instruction mentions {name}")
+
+    for root in source_roots:
+        if root in tokens or root in text:
+            add_candidate(root, "source", f"matches source root {root}")
+    for root in test_roots:
+        if root in tokens or root in text or "test" in tokens:
+            add_candidate(root, "test", f"matches test root {root}")
+    for root in docs_roots:
+        if "docs" in tokens or "readme" in tokens:
+            add_candidate(root, "docs", f"docs signal mapped to {root}")
+
+    if not candidates:
+        for path in (source_roots + test_roots + manifests + configs)[:8]:
+            ttype = "source" if path in source_roots else "test" if path in test_roots else "manifest" if path in manifests else "config"
+            add_candidate(path, ttype, "fallback to high-signal repo map roots")
+
+    action_classes = _infer_action_classes(text, tokens)
+    scope = _scope(sorted(candidates), action_classes, str(repo_map.get("repo_shape", "single_package")))
+    impact = _infer_change_impact(action_classes, list(candidates.values()), repo_map)
 
     confidence = 0.4
-    if targets:
+    if candidates:
         confidence += 0.2
     if repo_map:
-        confidence += 0.15
+        confidence += 0.2
     if validation_steps:
         confidence += 0.1
-    if len(action_classes) <= 3:
-        confidence += 0.1
-    if any(r.startswith("Instruction explicitly references") for r in rationale):
+    if any("instruction mentions" in ev for c in candidates.values() for ev in c.evidence):
         confidence += 0.1
 
-    confidence = max(0.1, min(1.0, confidence))
-
+    evidence = PlanningEvidence(
+        matched_terms=sorted(tokens)[:40],
+        matched_paths=sorted(candidates)[:20],
+        source_roots=source_roots[:8],
+        test_roots=test_roots[:8],
+        manifests=manifests[:8],
+        configs=configs[:8],
+        repo_shape=str(repo_map.get("repo_shape", "unknown")),
+        explicit_signals=[ev for c in candidates.values() for ev in c.evidence][:12],
+    )
+    rationale = [
+        f"Repo shape inferred as {evidence.repo_shape}.",
+        f"Mapped {len(candidates)} candidate targets from instruction + repo map.",
+        f"Predicted change impact: {impact.value}.",
+    ]
+    requires_write = bool(action_classes - {ActionClass.READ_ONLY, ActionClass.SHELL_READ_ONLY, ActionClass.GIT_SAFE})
+    requires_validation = requires_write or ActionClass.TEST_REPAIR in action_classes
     return PlanAnalysis(
-        candidate_targets=targets,
+        candidate_targets=sorted(candidates.values(), key=lambda c: c.target),
         action_classes=sorted(action_classes, key=lambda a: a.value),
-        estimated_scope=estimated_scope,
-        confidence_score=confidence,
+        estimated_scope=scope,
+        change_impact=impact,
+        grounding_evidence=evidence,
+        confidence_score=max(0.1, min(1.0, confidence)),
         rationale=rationale,
-        touches_multiple_files=estimated_scope is not EstimatedScope.SINGLE_FILE,
-        dependency_change=ActionClass.DEPENDENCY_CHANGE in action_classes,
-        migration_like=ActionClass.MIGRATION in action_classes,
-        refactor_like=ActionClass.BROAD_REFACTOR in action_classes,
-        test_fix_requires_edits=ActionClass.TEST_REPAIR in action_classes,
-        destructive_shell=ActionClass.DESTRUCTIVE_OPERATION in action_classes,
+        requires_write_phase=requires_write,
+        requires_validation_phase=requires_validation,
+        non_trivial=requires_write or scope != EstimatedScope.SINGLE_FILE,
     )
 
 
 def classify_plan_risk(instruction: str, analysis: PlanAnalysis) -> PlanRiskLevel:
-    action_set = set(analysis.action_classes)
-
-    if analysis.destructive_shell:
-        action_set.add(ActionClass.DESTRUCTIVE_OPERATION)
-    if analysis.dependency_change:
-        action_set.add(ActionClass.DEPENDENCY_CHANGE)
-    if analysis.migration_like:
-        action_set.add(ActionClass.MIGRATION)
-    if analysis.refactor_like:
-        action_set.add(ActionClass.BROAD_REFACTOR)
-    if analysis.test_fix_requires_edits:
-        action_set.add(ActionClass.TEST_REPAIR)
-
-    if ActionClass.DESTRUCTIVE_OPERATION in action_set:
+    _ = instruction
+    actions = set(analysis.action_classes)
+    if actions & {ActionClass.DEPENDENCY_CHANGE, ActionClass.MIGRATION, ActionClass.GIT_DESTRUCTIVE, ActionClass.FILE_DELETE_OR_MOVE}:
         return PlanRiskLevel.HIGH
-    if ActionClass.DEPENDENCY_CHANGE in action_set or ActionClass.MIGRATION in action_set:
+    if analysis.estimated_scope in {EstimatedScope.REPO_WIDE, EstimatedScope.PACKAGE_WIDE}:
         return PlanRiskLevel.HIGH
-    if ActionClass.BROAD_REFACTOR in action_set and analysis.estimated_scope in {
-        EstimatedScope.BROAD_MULTI_FILE,
-        EstimatedScope.REPO_WIDE,
-    }:
+    if analysis.change_impact in {ChangeImpact.CONFIG_OR_MANIFEST, ChangeImpact.MULTI_PACKAGE, ChangeImpact.CROSS_CUTTING}:
         return PlanRiskLevel.HIGH
-
-    if analysis.touches_multiple_files or analysis.estimated_scope in {EstimatedScope.NARROW_MULTI_FILE, EstimatedScope.BROAD_MULTI_FILE, EstimatedScope.REPO_WIDE}:
+    if analysis.estimated_scope in {EstimatedScope.NARROW_MULTI_FILE, EstimatedScope.BROAD_MULTI_FILE}:
         return PlanRiskLevel.MEDIUM
-    if action_set & {ActionClass.CONFIG_EDIT, ActionClass.TEST_REPAIR, ActionClass.SHELL_MUTATING, ActionClass.SHELL_READ_ONLY, ActionClass.CODE_EDIT, ActionClass.BROAD_REFACTOR}:
+    if actions & {ActionClass.CODE_EDIT, ActionClass.CONFIG_EDIT, ActionClass.TEST_REPAIR, ActionClass.SHELL_MUTATING, ActionClass.REFACTOR_NARROW, ActionClass.REFACTOR_BROAD}:
         return PlanRiskLevel.MEDIUM
     return PlanRiskLevel.LOW
 
 
+def _risk_assessment(analysis: PlanAnalysis, risk: PlanRiskLevel) -> RiskAssessment:
+    drivers: list[str] = []
+    if analysis.change_impact != ChangeImpact.SOURCE_ONLY:
+        drivers.append(f"change_impact={analysis.change_impact.value}")
+    if analysis.estimated_scope != EstimatedScope.SINGLE_FILE:
+        drivers.append(f"scope={analysis.estimated_scope.value}")
+    if any(a in {ActionClass.DEPENDENCY_CHANGE, ActionClass.MIGRATION, ActionClass.GIT_DESTRUCTIVE} for a in analysis.action_classes):
+        drivers.append("high_impact_action_class_detected")
+    if not drivers:
+        drivers.append("narrow_read_or_edit_scope")
+    return RiskAssessment(risk_level=risk, drivers=drivers)
+
+
 def is_non_trivial_task(_instruction: str, analysis: PlanAnalysis) -> bool:
-    return classify_plan_risk(_instruction, analysis) != PlanRiskLevel.LOW or bool(set(analysis.action_classes) - {ActionClass.READ_ONLY})
+    return analysis.non_trivial
 
 
-def generate_execution_plan(
-    instruction: str,
-    repo: Path,
-    repo_map: dict[str, Any] | None,
-    validation_steps: list[str] | None,
-) -> ExecutionPlan:
+def generate_execution_plan(instruction: str, repo: Path, repo_map: dict[str, Any] | None, validation_steps: list[str] | None) -> ExecutionPlan:
+    _ = repo
     text = instruction.strip()
     analysis = analyze_instruction(text, repo_map, validation_steps)
     risk = classify_plan_risk(text, analysis)
-    non_trivial = is_non_trivial_task(text, analysis)
-
-    actions = ["Inspect candidate targets and repository constraints before mutating files."]
-    requires_write = bool(set(analysis.action_classes) - {ActionClass.READ_ONLY, ActionClass.SHELL_READ_ONLY})
-    requires_validation = requires_write or ActionClass.TEST_REPAIR in set(analysis.action_classes)
-    if requires_write:
-        actions.append("Apply minimal deterministic edits scoped to inferred targets.")
-    if requires_validation:
-        actions.append("Execute validation plan in relevance/cost order; stop on first failing gate.")
-    if not requires_write:
-        actions.append("Summarize findings without mutating repository files.")
-
-    risks = [
-        "Potential regressions in changed modules.",
-    ]
-    if risk is PlanRiskLevel.HIGH:
-        risks.append("High-impact operation inferred from dependency/migration/destructive evidence.")
-    elif risk is PlanRiskLevel.MEDIUM:
-        risks.append("Cross-file or config/test-sensitive changes require careful validation.")
-    else:
-        risks.append("Narrow scope with no structural risk signals.")
-
-    validation = validation_steps or ["validation-configured-steps"]
-
-    assumptions = [
-        "Repository has a valid working tree and accessible toolchain.",
-        "Detected repo map reflects current checkout structure.",
-    ]
-    done = [
-        "Task goal satisfied with deterministic edits.",
-        "Validation gates pass or unresolved failures are explicitly summarized.",
-        "Changed files and rationale are reported.",
-    ]
+    risk_assessment = _risk_assessment(analysis, risk)
 
     return ExecutionPlan(
         task_goal=text,
-        assumptions=assumptions,
-        relevant_files=analysis.candidate_targets,
-        proposed_actions=actions,
-        risks=risks,
-        validation_steps=validation,
-        done_criteria=done,
+        assumptions=["Repository structure is represented by .villani/repo_map.json.", "Validation step list in .villani/validation.json is current."],
+        relevant_files=[c.target for c in analysis.candidate_targets],
+        proposed_actions=[
+            "Read high-signal candidate targets first.",
+            "Apply minimal edits constrained to predicted artifact touch set." if analysis.requires_write_phase else "Keep repository read-only.",
+            "Run validation in targeted-first then broadened order." if analysis.requires_validation_phase else "Skip validation (read-only task).",
+        ],
+        risks=[f"Risk classified as {risk.value}.", *risk_assessment.drivers],
+        validation_steps=validation_steps or ["validation-configured-steps"],
+        done_criteria=["Task outcome matches instruction.", "Validation outcomes are explicit.", "Checkpoint state contains compact handoff hints."],
         risk_level=risk,
-        non_trivial=non_trivial,
+        non_trivial=analysis.non_trivial,
         action_classes=[a.value for a in analysis.action_classes],
         estimated_scope=analysis.estimated_scope.value,
         rationale=analysis.rationale,
         confidence_score=analysis.confidence_score,
-        requires_write_phase=requires_write,
-        requires_validation_phase=requires_validation,
+        requires_write_phase=analysis.requires_write_phase,
+        requires_validation_phase=analysis.requires_validation_phase,
+        change_impact=analysis.change_impact.value,
+        candidate_targets=[asdict(c) for c in analysis.candidate_targets],
+        grounding_evidence=asdict(analysis.grounding_evidence),
+        risk_assessment={"risk_level": risk_assessment.risk_level.value, "drivers": risk_assessment.drivers},
     )
 
 
@@ -326,13 +361,10 @@ def compact_failure_output(output: str, max_lines: int = 24, max_chars: int = 18
     if not lines:
         return ""
     if len(lines) <= max_lines:
-        text = "\n".join(lines)
-        return text[:max_chars]
+        return "\n".join(lines)[:max_chars]
     head = max_lines // 2
     tail = max_lines - head - 1
-    selected = lines[:head] + ["..."] + lines[-tail:]
-    text = "\n".join(selected)
-    return text[:max_chars]
+    return "\n".join(lines[:head] + ["..."] + lines[-tail:])[:max_chars]
 
 
 def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
@@ -340,8 +372,6 @@ def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
         return default
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            return data
     except json.JSONDecodeError:
         return default
-    return default
+    return data if isinstance(data, dict) else default
