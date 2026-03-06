@@ -154,17 +154,17 @@ class RunnerController:
             self.app.post_message(LogAppend(f"[villani-mode] candidates: {', '.join(tasks)}", kind="meta"))
             return
         if etype == "takeover_dashboard":
-            self.app.post_message(LogAppend(f"[takeover] repo assessment: {event.get('summary', '')}", kind="meta"))
+            self.app.post_message(LogAppend(f"[villani-mode] repo assessment: {event.get('summary', '')}", kind="meta"))
             return
         if etype == "takeover_ranked":
             top = event.get("top", [])
-            self.app.post_message(LogAppend(f"[takeover] ranked {event.get('count', 0)} opportunities; top: {', '.join(top)}", kind="meta"))
+            self.app.post_message(LogAppend(f"[villani-mode] ranked {event.get('count', 0)} opportunities; top: {', '.join(top)}", kind="meta"))
             return
         if etype == "takeover_wave":
-            self.app.post_message(LogAppend(f"[takeover] executing wave {event.get('wave')}: {', '.join(event.get('selected', []))}", kind="meta"))
+            self.app.post_message(LogAppend(f"[villani-mode] executing wave {event.get('wave')}: {', '.join(event.get('selected', []))}", kind="meta"))
             return
         if etype == "takeover_wave_complete":
-            self.app.post_message(LogAppend(f"[takeover] wave {event.get('wave')} complete, confidence {event.get('confidence')}, risk {event.get('risk')}, retired {event.get('retired')}", kind="meta"))
+            self.app.post_message(LogAppend(f"[villani-mode] wave {event.get('wave')} complete, confidence {event.get('confidence')}, risk {event.get('risk')}, retired {event.get('retired')}", kind="meta"))
             return
         if etype == "failure_classified":
             self.app.post_message(LogAppend(f"[failure] classified as {event.get('category')}: {event.get('next_strategy')}", kind="meta"))

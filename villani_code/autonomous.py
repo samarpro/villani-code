@@ -18,6 +18,7 @@ from villani_code.autonomy import (
     VerificationEngine,
     VerificationStatus,
 )
+from villani_code.evidence import parse_command_evidence
 from villani_code.execution import VILLANI_TASK_BUDGET
 from villani_code.repo_rules import (
     classify_repo_path,
@@ -129,7 +130,7 @@ class VillaniModeController:
 
         for wave in range(1, self.takeover_config.max_waves + 1):
             if self._attempt_counter >= self.takeover_config.max_total_task_attempts:
-                return self._build_takeover_summary(state, "Takeover budget exhausted.")
+                return self._build_takeover_summary(state, "Villani mode budget exhausted.")
 
             state.repo_summary = self.planner.build_repo_summary()
             discovered = self.planner.discover_opportunities()
@@ -160,7 +161,7 @@ class VillaniModeController:
                 )
 
             selected = candidates[: self.takeover_config.max_commands_per_wave]
-            self._emit("autonomous_phase", phase=f"takeover wave {wave}")
+            self._emit("autonomous_phase", phase=f"Villani mode wave {wave}")
             self._emit(
                 "takeover_wave",
                 wave=wave,
@@ -178,7 +179,7 @@ class VillaniModeController:
                     >= self.takeover_config.max_total_task_attempts
                 ):
                     return self._build_takeover_summary(
-                        state, "Takeover budget exhausted."
+                        state, "Villani mode budget exhausted."
                     )
                 before_dirty = set(self._git_changed_files())
                 task_key = self._task_key_for_opportunity(op)
@@ -287,7 +288,7 @@ class VillaniModeController:
                 risk=state.current_risk_level,
             )
 
-        return self._build_takeover_summary(state, "Takeover budget exhausted.")
+        return self._build_takeover_summary(state, "Villani mode budget exhausted.")
 
     def inspect_repo(self) -> RepoSnapshot:
         files = sorted(
@@ -535,7 +536,7 @@ class VillaniModeController:
         task.status = TaskLifecycle.RUNNING.value
         self._emit("autonomous_phase", phase=f"Villani mode task started: {task.title}")
         objective = (
-            "You are in repo takeover mode. Execute one bounded intervention and summarize exact edits and validation. "
+            "You are in Villani mode. Execute one bounded intervention and summarize exact edits and validation. "
             f"Intervention: {task.title}\nEvidence: {task.rationale}"
         )
         if task.title == "Inspect repo for highest-leverage small improvement":
@@ -733,14 +734,11 @@ class VillaniModeController:
     def _extract_commands(self, result: dict[str, Any]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for tr in result.get("transcript", {}).get("tool_results", []):
-            content = str(tr.get("content", ""))
-            if "command:" in content and "exit:" in content:
+            for record in parse_command_evidence(str(tr.get("content", ""))):
                 out.append(
                     {
-                        "command": content.splitlines()[0]
-                        .replace("command:", "")
-                        .strip(),
-                        "exit": 0 if "exit: 0" in content else 1,
+                        "command": str(record.get("command", "")).strip(),
+                        "exit": int(record.get("exit", 1)),
                     }
                 )
         return out
@@ -837,7 +835,7 @@ class VillaniModeController:
             for t in self.attempted
         ):
             return [
-                "Inspect verification findings, then rerun takeover with tighter wave limits."
+                "Inspect verification findings, then rerun Villani mode with tighter wave limits."
             ]
         return ["Run full CI before merging autonomous changes."]
 
@@ -892,7 +890,7 @@ class VillaniModeController:
 
     @staticmethod
     def format_summary(summary: dict[str, Any]) -> str:
-        lines = ["# Repo takeover summary", ""]
+        lines = ["# Villani mode summary", ""]
         lines.append(f"Repo assessment: {summary.get('repo_summary', '')}")
         lines.append("## Tasks")
         for task in summary.get("tasks_attempted", []):

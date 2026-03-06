@@ -182,3 +182,38 @@ def test_importability_task_generates_or_requires_bounded_import_command(tmp_pat
     controller._execute_task(task)
     assert "python -c" in runner.prompt
     assert "No network" in runner.prompt
+
+
+def test_extract_commands_reads_json_bash_output(tmp_path: Path) -> None:
+    controller = VillaniModeController(object(), tmp_path)
+    commands = controller._extract_commands(
+        {
+            "transcript": {
+                "tool_results": [
+                    {
+                        "content": "{\"command\": \"python -c \\\"import villani_code\\\"\", \"exit_code\": 0, \"stdout\": \"\", \"stderr\": \"\"}"
+                    }
+                ]
+            }
+        }
+    )
+    assert commands == [{"command": 'python -c "import villani_code"', "exit": 0}]
+
+
+def test_validation_task_with_successful_artifact_is_not_marked_not_executed(tmp_path: Path) -> None:
+    controller = VillaniModeController(object(), tmp_path)
+    task = _task("Validate baseline importability", TaskContract.VALIDATION.value)
+    task.validation_artifacts = ["python -c 'import villani_code' (exit=0)"]
+    task.produced_validation = controller._has_real_validation_artifact(task)
+    verification = controller.verifier.verify(
+        "goal",
+        [],
+        [{"command": "python -c 'import villani_code'", "exit": 0}],
+        validation_artifacts=task.validation_artifacts,
+    )
+
+    status, reason = controller._adjudicate_task(task, verification)
+
+    assert task.produced_validation is True
+    assert status == "passed"
+    assert "validation_not_executed" not in reason

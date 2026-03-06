@@ -132,11 +132,21 @@ def test_cli_has_villani_mode_subcommand() -> None:
     result = cli_runner.invoke(cli.app, ["villani-mode", "--help"])
     assert result.exit_code == 0
 
-
-def test_cli_has_takeover_subcommand() -> None:
+def test_cli_primary_help_mentions_villani_mode() -> None:
     cli_runner = CliRunner()
-    result = cli_runner.invoke(cli.app, ["takeover", "--help"])
+    result = cli_runner.invoke(cli.app, ["--help"])
     assert result.exit_code == 0
+    assert "villani-mode" in result.stdout
+
+
+def test_cli_takeover_alias_is_hidden_from_primary_help() -> None:
+    cli_runner = CliRunner()
+    top_help = cli_runner.invoke(cli.app, ["--help"])
+    assert top_help.exit_code == 0
+    assert "takeover" not in top_help.stdout
+
+    alias_help = cli_runner.invoke(cli.app, ["takeover", "--help"])
+    assert alias_help.exit_code == 0
 
 
 def test_cli_flag_overrides_settings(tmp_path: Path) -> None:
@@ -434,7 +444,7 @@ def test_global_takeover_budget_limits_iterations(tmp_path: Path) -> None:
         [[_op(f"Task {i}", TaskContract.INSPECTION.value)] for i in range(10)]
     )
     summary = controller.run()
-    assert summary["done_reason"] == "Takeover budget exhausted."
+    assert summary["done_reason"] == "Villani mode budget exhausted."
 
 
 def test_validation_followup_for_importability_example(tmp_path: Path) -> None:

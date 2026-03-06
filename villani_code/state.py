@@ -18,6 +18,7 @@ from villani_code.autonomy import (
 from villani_code.checkpoints import CheckpointManager
 from villani_code.context_budget import ContextBudget
 from villani_code.edits import ProposalStore
+from villani_code.evidence import normalize_artifact, parse_command_evidence
 from villani_code.execution import ExecutionBudget, ExecutionResult
 from villani_code.hooks import HookRunner
 from villani_code.indexing import DEFAULT_IGNORE, RepoIndex
@@ -216,20 +217,10 @@ class Runner:
         def _validation_artifacts() -> list[str]:
             artifacts: list[str] = []
             for tool_result in transcript.get("tool_results", []):
-                content = str(tool_result.get("content", ""))
-                if "command:" in content and "exit:" in content:
-                    cmd = content.splitlines()[0].replace("command:", "").strip()
-                    exit_line = next(
-                        (
-                            line
-                            for line in content.splitlines()
-                            if line.startswith("exit:")
-                        ),
-                        "exit: ?",
-                    )
-                    artifacts.append(
-                        f"{cmd} ({exit_line.replace('exit:', 'exit').strip()})"
-                    )
+                for record in parse_command_evidence(str(tool_result.get("content", ""))):
+                    artifact = normalize_artifact(record)
+                    if artifact:
+                        artifacts.append(artifact)
             return artifacts
 
         def _runner_failures() -> list[str]:
