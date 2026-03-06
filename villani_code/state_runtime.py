@@ -176,7 +176,13 @@ def run_verification(runner: Any, trigger: str = "edit") -> str:
         before_contents=dict(runner._current_verification_before_contents),
     )
     finding_fingerprints = sorted(
-        f"{f.category.value}|{(f.file_path or '').replace('\\', '/').lstrip('./')}|{f.message.strip().lower()}"
+        "|".join(
+            [
+                f.category.value,
+                (f.file_path or "").replace("\\", "/").lstrip("./"),
+                f.message.strip().lower(),
+            ]
+        )
         for f in verification.findings
     )
     fingerprint = json.dumps(

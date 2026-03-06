@@ -892,66 +892,37 @@ class VillaniModeController:
         return followups
 
     def _mark_category_discovery(self) -> None:
-        files = [p.relative_to(self.repo).as_posix() for p in self.repo.rglob("*") if p.is_file()]
-        if any(self._is_test_file(f) for f in files):
-            self._category_state["tests"] = "discovered"
-        if any(f.endswith(".md") for f in files):
-            self._category_state["docs"] = "discovered"
-        if any(f.endswith("cli.py") for f in files) or (self.repo / "pyproject.toml").exists():
-            self._category_state["entrypoints"] = "discovered"
-        if any(f.endswith(".py") for f in files):
-            self._category_state["imports"] = "discovered"
+        from villani_code import autonomous_progress
+
+        autonomous_progress.mark_category_discovery(
+            self.repo, self._category_state, self._is_test_file
+        )
 
     def _update_category_attempt_state(self, task: AutonomousTask) -> None:
-        title = task.title.lower()
-        if "test" in title:
-            self._category_state["tests"] = "attempted"
-        if "doc" in title:
-            self._category_state["docs"] = "attempted"
-        if "entrypoint" in title or "cli" in title:
-            self._category_state["entrypoints"] = "attempted"
-        if "import" in title:
-            self._category_state["imports"] = "attempted"
+        from villani_code import autonomous_progress
+
+        autonomous_progress.update_category_attempt_state(
+            self._category_state, task.title
+        )
 
     def _enqueue_surface_followups_if_needed(self) -> bool:
+        from villani_code import autonomous_progress
+
         inserted = False
-        if self._category_state.get("tests") == "discovered":
-            self._insert_followup(
-                Opportunity("Run baseline tests", "followup_tests", 0.99, 0.9, ["tests/"], "tests remain unexamined", "small", "run baseline tests", TaskContract.VALIDATION.value),
-                "system",
-            )
-            self._category_state["tests"] = "attempted"
+        for followup in autonomous_progress.surface_followups(self._category_state):
+            self._insert_followup(followup, "system")
             inserted = True
-            self._log("[villani-mode] stop blocked: tests remain unexamined")
-        if self._category_state.get("docs") == "discovered":
-            self._insert_followup(
-                Opportunity("Validate documented commands/examples", "followup_docs", 0.92, 0.78, ["README.md"], "docs remain unexamined", "small", "validate documented commands/examples", TaskContract.INSPECTION.value),
-                "system",
-            )
-            self._category_state["docs"] = "attempted"
-            inserted = True
-        if self._category_state.get("entrypoints") == "discovered":
-            self._insert_followup(
-                Opportunity("Validate CLI entrypoint", "followup_entrypoint", 0.9, 0.76, [], "entrypoints remain unexamined", "small", "validate CLI entrypoint", TaskContract.VALIDATION.value),
-                "system",
-            )
-            self._category_state["entrypoints"] = "attempted"
-            inserted = True
+            if followup.title == "Run baseline tests":
+                self._log("[villani-mode] stop blocked: tests remain unexamined")
         return inserted
 
     def _stop_reason_from_categories(self) -> str:
-        self._stop_rationale = {
-            "tests": self._category_state.get("tests", "unknown"),
-            "docs": self._category_state.get("docs", "unknown"),
-            "entrypoints": self._category_state.get("entrypoints", "unknown"),
-            "improvements": "exhausted",
-        }
-        return (
-            "No remaining opportunities above confidence threshold; "
-            f"tests examined: {self._stop_rationale['tests']}; "
-            f"docs examined: {self._stop_rationale['docs']}; "
-            f"entrypoints examined: {self._stop_rationale['entrypoints']}."
+        from villani_code import autonomous_progress
+
+        self._stop_rationale, reason = autonomous_progress.stop_reason_from_categories(
+            self._category_state
         )
+        return reason
 
     def _git_changed_files(self) -> list[str]:
         proc = subprocess.run(

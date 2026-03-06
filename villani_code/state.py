@@ -19,7 +19,6 @@ from villani_code.checkpoints import CheckpointManager
 from villani_code.context_budget import ContextBudget
 from villani_code.context_governance import ContextGovernanceManager
 from villani_code.edits import ProposalStore
-from villani_code.evidence import normalize_artifact, parse_command_evidence
 from villani_code.execution import ExecutionBudget, ExecutionResult
 from villani_code.hooks import HookRunner
 from villani_code.indexing import DEFAULT_IGNORE, RepoIndex
@@ -33,8 +32,12 @@ from villani_code.retrieval import Retriever
 from villani_code.skills import discover_skills
 from villani_code.streaming import StreamCoalescer, assemble_anthropic_stream
 from villani_code.tools import tool_specs
-from villani_code.repo_rules import classify_repo_path, is_ignored_repo_path
 from villani_code.transcripts import save_transcript
+from villani_code.state_execution import (
+    collect_runner_failures,
+    collect_validation_artifacts,
+    summarize_changes,
+)
 from villani_code.utils import (
     ensure_dir,
     is_effectively_empty_content,
@@ -205,37 +208,8 @@ class Runner:
             return sorted(current - baseline_changed)
 
         def _change_summary() -> tuple[list[str], list[str], list[str]]:
-            attributed = _attributed_changed_files()
-            intentional: list[str] = []
-            incidental: list[str] = []
-            for path in attributed:
-                if (
-                    is_ignored_repo_path(path)
-                    or classify_repo_path(path) != "authoritative"
-                ):
-                    incidental.append(path)
-                else:
-                    intentional.append(path)
-            all_changes = sorted(set(intentional) | set(incidental))
-            return sorted(set(intentional)), sorted(set(incidental)), all_changes
-
-        def _validation_artifacts() -> list[str]:
-            artifacts: list[str] = []
-            for tool_result in transcript.get("tool_results", []):
-                for record in parse_command_evidence(str(tool_result.get("content", ""))):
-                    artifact = normalize_artifact(record)
-                    if artifact:
-                        artifacts.append(artifact)
-            return artifacts
-
-        def _runner_failures() -> list[str]:
-            failures: list[str] = []
-            for tool_result in transcript.get("tool_results", []):
-                if tool_result.get("is_error"):
-                    failures.append(
-                        f"tool_failure: {str(tool_result.get('content', ''))[:220]}"
-                    )
-            return failures
+            summary = summarize_changes(_attributed_changed_files())
+            return summary.intentional, summary.incidental, summary.all_changes
 
         def _finish_bounded(
             response: dict[str, Any], reason: str, completed: bool
@@ -258,9 +232,9 @@ class Runner:
                 all_changes=all_changes,
                 intended_targets=sorted(self._intended_targets),
                 before_contents=dict(self._before_contents),
-                validation_artifacts=_validation_artifacts(),
+                validation_artifacts=collect_validation_artifacts(transcript),
                 inspection_summary="",
-                runner_failures=_runner_failures(),
+                runner_failures=collect_runner_failures(transcript),
                 terminated_reason=reason,
                 completed=completed,
             )

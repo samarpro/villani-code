@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 
 from villani_code.interrupts import InterruptController
+from villani_code.optional_tui import OptionalTUIDependencyError, TUI_INSTALL_HINT
 
 from villani_code.anthropic_client import AnthropicClient
 from villani_code.openai_client import OpenAIClient
@@ -35,7 +36,7 @@ def _load_settings_manager() -> Any | None:
 
 
 def _load_interactive_shell() -> tuple[Any, type[Exception]]:
-    from villani_code.interactive import InteractiveShell, OptionalTUIDependencyError
+    from villani_code.interactive import InteractiveShell
 
     return InteractiveShell, OptionalTUIDependencyError
 
@@ -75,7 +76,7 @@ def _run_interactive(base_url: str, model: str, repo: Path, max_tokens: int, sma
     except ModuleNotFoundError as exc:
         if exc.name == "textual":
             raise typer.BadParameter(
-                "Interactive mode requires the optional TUI dependencies. Install with `pip install .[tui]` or `pip install villani-code[tui]`."
+                TUI_INSTALL_HINT
             ) from exc
         raise
     except dependency_error as exc:
@@ -89,7 +90,7 @@ def _run_interactive(base_url: str, model: str, repo: Path, max_tokens: int, sma
         except ModuleNotFoundError as exc:
             if exc.name == "textual":
                 raise typer.BadParameter(
-                    "Interactive mode requires the optional TUI dependencies. Install with `pip install .[tui]` or `pip install villani-code[tui]`."
+                    TUI_INSTALL_HINT
                 ) from exc
             raise
         except dependency_error as exc:

@@ -66,6 +66,37 @@ def test_run_runs_without_textual(monkeypatch, tmp_path: Path) -> None:
     assert "ok" in result.stdout
 
 
+
+
+def test_core_imports_do_not_pull_textual(monkeypatch) -> None:
+    _block_textual(monkeypatch)
+    for module_name in ["villani_code.cli", "villani_code.interactive", "villani_code.state", "textual"]:
+        sys.modules.pop(module_name, None)
+    importlib.import_module("villani_code.cli")
+    importlib.import_module("villani_code.state")
+    assert "textual" not in sys.modules
+
+
+def test_default_launch_path_fails_cleanly_without_tui(monkeypatch, tmp_path: Path) -> None:
+    _block_textual(monkeypatch)
+    sys.modules.pop("villani_code.cli", None)
+    sys.modules.pop("villani_code.interactive", None)
+    module = importlib.import_module("villani_code.cli")
+    monkeypatch.setattr(module, "_build_runner", lambda *a, **k: object())
+
+    result = runner.invoke(
+        module.app,
+        [
+            "--base-url",
+            "http://localhost:8000",
+            "--model",
+            "demo-model",
+            "--repo",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "requires the optional TUI dependencies" in result.output
 def test_interactive_fails_cleanly_without_tui(monkeypatch, tmp_path: Path) -> None:
     _block_textual(monkeypatch)
     sys.modules.pop("villani_code.cli", None)

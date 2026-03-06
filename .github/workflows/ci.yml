@@ -26,4 +26,4 @@ jobs:
       - name: Ruff
         run: ruff check .
       - name: Mypy
-        run: mypy villani_code/cli.py villani_code/interactive.py villani_code/state_tooling.py villani_code/autonomous_reporting.py
+        run: mypy villani_code
