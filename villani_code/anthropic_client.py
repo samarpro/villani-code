@@ -17,13 +17,25 @@ class AnthropicClient:
         if not stream:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(url, json=payload)
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    response_text = exc.response.text
+                    raise RuntimeError(
+                        f"Anthropic-compatible /v1/messages request failed: {exc}. Response body: {response_text}"
+                    ) from exc
                 return response.json()
 
         def gen() -> Generator[dict[str, Any], None, None]:
             with httpx.Client(timeout=self.timeout) as client:
                 with client.stream("POST", url, json=payload) as response:
-                    response.raise_for_status()
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        response_text = exc.response.text
+                        raise RuntimeError(
+                            f"Anthropic-compatible /v1/messages stream request failed: {exc}. Response body: {response_text}"
+                        ) from exc
                     for event in parse_sse_events(response.iter_lines()):
                         yield event
 

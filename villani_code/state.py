@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import time
@@ -560,10 +561,13 @@ class Runner:
             reason = _budget_reason()
             if reason:
                 return _finish_bounded(response, reason, reason == "completed")
-            next_user_content = list(tool_results)
-            if self._pending_verification:
-                next_user_content.append(
-                    {"type": "text", "text": self._pending_verification}
+            next_user_content = copy.deepcopy(tool_results)
+            if self._pending_verification and next_user_content:
+                existing = str(next_user_content[-1].get("content", ""))
+                next_user_content[-1]["content"] = (
+                    f"{existing}\n\n{self._pending_verification}"
+                    if existing
+                    else self._pending_verification
                 )
                 self._pending_verification = ""
             messages.append({"role": "user", "content": next_user_content})
