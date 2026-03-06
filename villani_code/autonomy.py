@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
@@ -51,29 +52,70 @@ class VerificationEngine:
     def __init__(self, repo: Path):
         self.repo = repo
 
-    def verify(self, goal: str, changed_files: list[str], command_results: list[dict[str, Any]] | None = None) -> VerificationResult:
+    def verify(
+        self,
+        goal: str,
+        changed_files: list[str],
+        command_results: list[dict[str, Any]] | None = None,
+    ) -> VerificationResult:
         findings: list[VerificationFinding] = []
         command_results = command_results or []
-        commands_run = [str(c.get("command", "")) for c in command_results if c.get("command")]
+        commands_run = [
+            str(c.get("command", "")) for c in command_results if c.get("command")
+        ]
         examined: list[str] = []
 
         for rel in changed_files[:12]:
             path = self.repo / rel
             if not path.exists() or not path.is_file():
-                findings.append(VerificationFinding(FindingCategory.INCOMPLETE_EDIT, "Changed file is missing after edit", rel, "high"))
+                findings.append(
+                    VerificationFinding(
+                        FindingCategory.INCOMPLETE_EDIT,
+                        "Changed file is missing after edit",
+                        rel,
+                        "high",
+                    )
+                )
                 continue
             examined.append(rel)
             text = path.read_text(encoding="utf-8", errors="replace")
             if "TODO" in text or "FIXME" in text:
-                findings.append(VerificationFinding(FindingCategory.TEST_GAP, "TODO/FIXME still present in touched file", rel, "low"))
-            if "import " in text and "  " in text.splitlines()[0:1][0] if text.splitlines() else False:
-                findings.append(VerificationFinding(FindingCategory.INCONSISTENT_NAMING, "Suspicious formatting around imports", rel, "low"))
+                findings.append(
+                    VerificationFinding(
+                        FindingCategory.TEST_GAP,
+                        "TODO/FIXME still present in touched file",
+                        rel,
+                        "low",
+                    )
+                )
+            if (
+                "import " in text and "  " in text.splitlines()[0:1][0]
+                if text.splitlines()
+                else False
+            ):
+                findings.append(
+                    VerificationFinding(
+                        FindingCategory.INCONSISTENT_NAMING,
+                        "Suspicious formatting around imports",
+                        rel,
+                        "low",
+                    )
+                )
 
         for cmd in command_results:
             if int(cmd.get("exit", 0)) != 0:
-                findings.append(VerificationFinding(FindingCategory.REGRESSION, f"Validation command failed: {cmd.get('command', '<unknown>')}", None, "high"))
+                findings.append(
+                    VerificationFinding(
+                        FindingCategory.REGRESSION,
+                        f"Validation command failed: {cmd.get('command', '<unknown>')}",
+                        None,
+                        "high",
+                    )
+                )
 
-        git_stat = subprocess.run(["git", "diff", "--stat"], cwd=self.repo, capture_output=True, text=True)
+        git_stat = subprocess.run(
+            ["git", "diff", "--stat"], cwd=self.repo, capture_output=True, text=True
+        )
         stat_text = git_stat.stdout.strip()
         if stat_text:
             last = stat_text.splitlines()[-1]
@@ -81,7 +123,14 @@ class VerificationEngine:
                 try:
                     files_changed = int(last.split(" files changed", 1)[0].split()[-1])
                     if files_changed > 8:
-                        findings.append(VerificationFinding(FindingCategory.SUSPICIOUS_BREADTH, f"Large edit batch detected ({files_changed} files)", None, "medium"))
+                        findings.append(
+                            VerificationFinding(
+                                FindingCategory.SUSPICIOUS_BREADTH,
+                                f"Large edit batch detected ({files_changed} files)",
+                                None,
+                                "medium",
+                            )
+                        )
                 except (ValueError, IndexError):
                     pass
 
@@ -152,7 +201,9 @@ class FailureClassifier:
             strategy = "Isolate failing tests and separate pre-existing failures from introduced regressions."
         elif "no progress" in text or "blocked" in text:
             category = FailureCategory.REPEATED_NO_PROGRESS
-            strategy = "Switch strategy: decompose objective and execute one bounded step."
+            strategy = (
+                "Switch strategy: decompose objective and execute one bounded step."
+            )
         elif "verify" in text or "verification" in text:
             category = FailureCategory.VERIFICATION_FAILURE
             strategy = "Rollback or repair the failing change and re-run adversarial verification."
@@ -161,7 +212,9 @@ class FailureClassifier:
             strategy = "Inspect lockfiles/manifests before unrelated edits."
         elif "not found" in text or "unknown" in text:
             category = FailureCategory.MISSING_CONTEXT
-            strategy = "Gather targeted evidence (read files, grep symbols) before editing."
+            strategy = (
+                "Gather targeted evidence (read files, grep symbols) before editing."
+            )
 
         count = self._counts.get(category, 0) + 1
         self._counts[category] = count
@@ -169,7 +222,14 @@ class FailureClassifier:
             category = FailureCategory.REPEATED_NO_PROGRESS
             strategy = "Repeated failure pattern detected; change approach and reduce blast radius."
 
-        return FailureEvent(category=category, cause_summary=reason, evidence=evidence[:280], retryable=retryable, suggested_strategy=strategy, occurrence_count=count)
+        return FailureEvent(
+            category=category,
+            cause_summary=reason,
+            evidence=evidence[:280],
+            retryable=retryable,
+            suggested_strategy=strategy,
+            occurrence_count=count,
+        )
 
 
 @dataclass(slots=True)
@@ -206,8 +266,48 @@ class TakeoverPlanner:
     def __init__(self, repo: Path):
         self.repo = repo
 
+    def _find_todo_fixme_matches(self) -> list[str]:
+        rg_path = shutil.which("rg")
+        if rg_path:
+            try:
+                result = subprocess.run(
+                    ["rg", "-n", "TODO|FIXME", "."],
+                    cwd=self.repo,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode in {0, 1}:
+                    return [line for line in result.stdout.splitlines() if line.strip()]
+            except (FileNotFoundError, OSError, subprocess.SubprocessError):
+                pass
+
+        matches: list[str] = []
+        for path in self.repo.rglob("*"):
+            if len(matches) >= 50:
+                break
+            if ".git" in path.parts or not path.is_file():
+                continue
+            try:
+                if path.stat().st_size > 1_000_000:
+                    continue
+                with path.open("r", encoding="utf-8", errors="ignore") as f:
+                    for line_no, line in enumerate(f, start=1):
+                        if "TODO" in line or "FIXME" in line:
+                            rel = path.relative_to(self.repo).as_posix()
+                            matches.append(f"{rel}:{line_no}: {line.strip()}")
+                            if len(matches) >= 50:
+                                break
+            except OSError:
+                continue
+
+        return matches
+
     def build_repo_summary(self) -> str:
-        files = [p for p in self.repo.rglob("*") if p.is_file() and ".git" not in p.as_posix()]
+        files = [
+            p
+            for p in self.repo.rglob("*")
+            if p.is_file() and ".git" not in p.as_posix()
+        ]
         py = sum(1 for p in files if p.suffix == ".py")
         tests = sum(1 for p in files if "tests" in p.parts)
         md = sum(1 for p in files if p.suffix == ".md")
@@ -216,10 +316,45 @@ class TakeoverPlanner:
     def discover_opportunities(self) -> list[Opportunity]:
         ops: list[Opportunity] = []
         if (self.repo / "tests").exists():
-            ops.append(Opportunity("Validate baseline tests", "broken_tests", 0.92, 0.86, ["tests/"], "tests directory present", "small", "run pytest -q"))
-        todos = subprocess.run(["rg", "-n", "TODO|FIXME", "."], cwd=self.repo, capture_output=True, text=True)
-        if todos.stdout.strip():
-            ops.append(Opportunity("Triage TODO/FIXME cluster", "todo_fixme_cluster", 0.68, 0.72, [], todos.stdout.splitlines()[0], "medium", "resolve highest-signal TODO"))
+            ops.append(
+                Opportunity(
+                    "Validate baseline tests",
+                    "broken_tests",
+                    0.92,
+                    0.86,
+                    ["tests/"],
+                    "tests directory present",
+                    "small",
+                    "run pytest -q",
+                )
+            )
+        todo_matches = self._find_todo_fixme_matches()
+        if todo_matches:
+            ops.append(
+                Opportunity(
+                    "Triage TODO/FIXME cluster",
+                    "todo_fixme_cluster",
+                    0.68,
+                    0.72,
+                    [],
+                    todo_matches[0],
+                    "medium",
+                    "resolve highest-signal TODO",
+                )
+            )
         if (self.repo / "README.md").exists():
-            ops.append(Opportunity("Audit docs drift", "stale_docs", 0.55, 0.64, ["README.md"], "README present", "small", "sync docs with current CLI"))
-        return sorted(ops, key=lambda o: (o.priority * 0.7 + o.confidence * 0.3), reverse=True)
+            ops.append(
+                Opportunity(
+                    "Audit docs drift",
+                    "stale_docs",
+                    0.55,
+                    0.64,
+                    ["README.md"],
+                    "README present",
+                    "small",
+                    "sync docs with current CLI",
+                )
+            )
+        return sorted(
+            ops, key=lambda o: (o.priority * 0.7 + o.confidence * 0.3), reverse=True
+        )
