@@ -204,7 +204,7 @@ def test_loop_retries_on_empty_assistant_turn(tmp_path: Path):
     assert continuation_messages
 
 
-def test_tool_result_message_includes_verification_text_when_pending(tmp_path: Path):
+def test_tool_result_followup_is_pure_tool_result_message(tmp_path: Path):
     client = FakeClientToolUseThenDone()
     runner = Runner(client=client, repo=tmp_path, model="m", stream=False)
 
@@ -224,8 +224,16 @@ def test_tool_result_message_includes_verification_text_when_pending(tmp_path: P
         for m in client.second_payload["messages"]
         if m["role"] == "user" and m["content"] and m["content"][0].get("type") == "tool_result"
     )
-    assert first_tool_result_msg["content"][0].get("type") == "tool_result"
-    assert first_tool_result_msg["content"][-1] == {"type": "text", "text": "<verification>combined</verification>"}
+    assistant_idx = next(
+        i
+        for i, m in enumerate(client.second_payload["messages"])
+        if m["role"] == "assistant" and m["content"] and m["content"][0].get("type") == "tool_use"
+    )
+    user_follow_ups = [m for m in client.second_payload["messages"][assistant_idx + 1 :] if m["role"] == "user"]
+    assert len(user_follow_ups) == 1
+    assert first_tool_result_msg == user_follow_ups[0]
+    assert all(block.get("type") == "tool_result" for block in first_tool_result_msg["content"])
+    assert "<verification>combined</verification>" in first_tool_result_msg["content"][-1]["content"]
 
 
 def test_anthropic_message_order_after_tool_use_with_pending_verification(tmp_path: Path):
@@ -256,11 +264,8 @@ def test_anthropic_message_order_after_tool_use_with_pending_verification(tmp_pa
     next_user_message = user_follow_ups[0]
     assert next_user_message == msgs[assistant_idx + 1]
     assert next_user_message["content"][0]["type"] == "tool_result"
-    assert any(block.get("type") == "tool_result" for block in next_user_message["content"])
-    assert {
-        "type": "text",
-        "text": "<verification>order-check</verification>",
-    } in next_user_message["content"]
+    assert all(block.get("type") == "tool_result" for block in next_user_message["content"])
+    assert "<verification>order-check</verification>" in next_user_message["content"][-1]["content"]
 
 def test_loop_retries_twice_then_succeeds(tmp_path: Path):
     client = FakeClientTwoEmptyThenDone()

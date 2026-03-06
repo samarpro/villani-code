@@ -43,7 +43,50 @@ def prepare_messages_for_model(runner: Any, messages: list[dict[str, Any]]) -> l
     )
     runner._context_governance.prune_for_budget(inventory)
     runner._context_governance.save_inventory(inventory)
+    validate_anthropic_tool_sequence(prepared)
     return prepared
+
+
+def validate_anthropic_tool_sequence(messages: list[dict[str, Any]]) -> None:
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content", [])
+        if not isinstance(content, list):
+            continue
+        if not any(isinstance(block, dict) and block.get("type") == "tool_use" for block in content):
+            continue
+
+        followup_index = index + 1
+        if followup_index >= len(messages):
+            raise RuntimeError(
+                f"Invalid Anthropic tool sequence at message index {index}: assistant tool_use message must be immediately followed by a user tool_result message, but no follow-up message exists."
+            )
+
+        followup = messages[followup_index]
+        if followup.get("role") != "user":
+            raise RuntimeError(
+                f"Invalid Anthropic tool sequence at message index {index}: assistant tool_use message must be immediately followed by a user tool_result message, but found role '{followup.get('role')}' at index {followup_index}."
+            )
+
+        followup_content = followup.get("content", [])
+        if not isinstance(followup_content, list) or not followup_content:
+            raise RuntimeError(
+                f"Invalid Anthropic tool sequence at message index {index}: follow-up user message at index {followup_index} must contain a non-empty content list of tool_result blocks."
+            )
+
+        invalid_block_index = next(
+            (
+                block_index
+                for block_index, block in enumerate(followup_content)
+                if not (isinstance(block, dict) and block.get("type") == "tool_result")
+            ),
+            None,
+        )
+        if invalid_block_index is not None:
+            raise RuntimeError(
+                f"Invalid Anthropic tool sequence at message index {index}: follow-up user message at index {followup_index} must contain only tool_result blocks, but found non-tool_result block at content index {invalid_block_index}."
+            )
 
 
 def inject_retrieval_briefing(runner: Any, messages: list[dict[str, Any]]) -> None:

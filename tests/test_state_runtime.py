@@ -100,3 +100,47 @@ def test_inject_retrieval_briefing_inserts_for_plain_text_user_turn() -> None:
     assert messages[0]["content"][0]["type"] == "text"
     assert "<retrieval-briefing>" in messages[0]["content"][0]["text"]
     assert messages[0]["content"][1] == {"type": "text", "text": "Need context on runtime."}
+
+
+def test_validate_anthropic_tool_sequence_rejects_text_after_tool_result() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "toolu_1", "name": "Ls", "input": {"path": "."}}],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok", "is_error": False},
+                {"type": "text", "text": "extra"},
+            ],
+        },
+    ]
+
+    with pytest.raises(RuntimeError, match="message index 0"):
+        state_runtime.validate_anthropic_tool_sequence(messages)
+
+
+def test_validate_anthropic_tool_sequence_rejects_missing_followup_user_message() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "toolu_1", "name": "Ls", "input": {"path": "."}}],
+        }
+    ]
+
+    with pytest.raises(RuntimeError, match="message index 0"):
+        state_runtime.validate_anthropic_tool_sequence(messages)
+
+
+def test_validate_anthropic_tool_sequence_rejects_non_user_followup() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "toolu_1", "name": "Ls", "input": {"path": "."}}],
+        },
+        {"role": "assistant", "content": [{"type": "text", "text": "not allowed"}]},
+    ]
+
+    with pytest.raises(RuntimeError, match="message index 0"):
+        state_runtime.validate_anthropic_tool_sequence(messages)
