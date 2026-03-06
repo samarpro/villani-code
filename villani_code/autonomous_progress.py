@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Callable
+
+from villani_code.autonomy import Opportunity, TaskContract
+
+
+def mark_category_discovery(repo: Path, category_state: dict[str, str], is_test_file: Callable[[str], bool]) -> None:
+    files = [p.relative_to(repo).as_posix() for p in repo.rglob("*") if p.is_file()]
+    if any(is_test_file(f) for f in files):
+        category_state["tests"] = "discovered"
+    if any(f.endswith(".md") for f in files):
+        category_state["docs"] = "discovered"
+    if any(f.endswith("cli.py") for f in files) or (repo / "pyproject.toml").exists():
+        category_state["entrypoints"] = "discovered"
+    if any(f.endswith(".py") for f in files):
+        category_state["imports"] = "discovered"
+
+
+def update_category_attempt_state(category_state: dict[str, str], task_title: str) -> None:
+    title = task_title.lower()
+    if "test" in title:
+        category_state["tests"] = "attempted"
+    if "doc" in title:
+        category_state["docs"] = "attempted"
+    if "entrypoint" in title or "cli" in title:
+        category_state["entrypoints"] = "attempted"
+    if "import" in title:
+        category_state["imports"] = "attempted"
+
+
+def surface_followups(category_state: dict[str, str]) -> list[Opportunity]:
+    followups: list[Opportunity] = []
+    if category_state.get("tests") == "discovered":
+        followups.append(
+            Opportunity(
+                "Run baseline tests",
+                "followup_tests",
+                0.99,
+                0.9,
+                ["tests/"],
+                "tests remain unexamined",
+                "small",
+                "run baseline tests",
+                TaskContract.VALIDATION.value,
+            )
+        )
+        category_state["tests"] = "attempted"
+
+    if category_state.get("docs") == "discovered":
+        followups.append(
+            Opportunity(
+                "Validate documented commands/examples",
+                "followup_docs",
+                0.92,
+                0.78,
+                ["README.md"],
+                "docs remain unexamined",
+                "small",
+                "validate documented commands/examples",
+                TaskContract.INSPECTION.value,
+            )
+        )
+        category_state["docs"] = "attempted"
+
+    if category_state.get("entrypoints") == "discovered":
+        followups.append(
+            Opportunity(
+                "Validate CLI entrypoint",
+                "followup_entrypoint",
+                0.9,
+                0.76,
+                [],
+                "entrypoints remain unexamined",
+                "small",
+                "validate CLI entrypoint",
+                TaskContract.VALIDATION.value,
+            )
+        )
+        category_state["entrypoints"] = "attempted"
+    return followups
+
+
+def stop_reason_from_categories(category_state: dict[str, str]) -> tuple[dict[str, str], str]:
+    rationale = {
+        "tests": category_state.get("tests", "unknown"),
+        "docs": category_state.get("docs", "unknown"),
+        "entrypoints": category_state.get("entrypoints", "unknown"),
+        "improvements": "exhausted",
+    }
+    reason = (
+        "No remaining opportunities above confidence threshold; "
+        f"tests examined: {rationale['tests']}; "
+        f"docs examined: {rationale['docs']}; "
+        f"entrypoints examined: {rationale['entrypoints']}."
+    )
+    return rationale, reason

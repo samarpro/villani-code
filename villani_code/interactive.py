@@ -3,21 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-
-class OptionalTUIDependencyError(RuntimeError):
-    """Raised when interactive mode is requested without the optional TUI extra."""
+from villani_code.optional_tui import remap_textual_import_error
 
 
 def _load_tui_assets() -> str:
     try:
         from villani_code.tui.assets import LAUNCH_BANNER
     except ModuleNotFoundError as exc:
-        if exc.name == "textual":
-            raise OptionalTUIDependencyError(
-                "Interactive mode requires the optional TUI dependencies. "
-                "Install with `pip install .[tui]` or `pip install villani-code[tui]`."
-            ) from exc
-        raise
+        remap_textual_import_error(exc)
     return LAUNCH_BANNER
 
 
@@ -25,12 +18,7 @@ def _load_tui_app() -> type[Any]:
     try:
         from villani_code.tui.app import VillaniTUI
     except ModuleNotFoundError as exc:
-        if exc.name == "textual":
-            raise OptionalTUIDependencyError(
-                "Interactive mode requires the optional TUI dependencies. "
-                "Install with `pip install .[tui]` or `pip install villani-code[tui]`."
-            ) from exc
-        raise
+        remap_textual_import_error(exc)
     return VillaniTUI
 
 
