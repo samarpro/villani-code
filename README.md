@@ -1,322 +1,132 @@
 # Villani Code
 
-```text
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃                                                                              ┃
-┃             ^                ^                ^                              ┃
-┃            / \              / \              / \                             ┃
-┃           /   \            /   \            /   \                            ┃
-┃                                                                              ┃
-┃   __     ___ _ _             _    ____          _                            ┃
-┃   \ \   / (_) | | __ _ _ __ (_)  / ___|___   __| | ___                       ┃
-┃    \ \ / /| | | |/ _` | '_ \| | | |   / _ \ / _` |/ _ \                      ┃
-┃     \ V / | | | | (_| | | | | | | |__| (_) | (_| |  __/                      ┃
-┃      \_/  |_|_|_|\__,_|_| |_|_|  \____\___/ \__,_|\___|                      ┃
-┃                                                                              ┃
-┃   Some tools help. Some tools assist. Villani Code intervenes.               ┃
-┃                                                                              ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-```
+Villani Code is a **disciplined coding agent for constrained inference**.
 
-**Villani Code** is an evil terminal coding agent.
-It points at your repo, talks to a compatible model API, and plans plus executes tool calls (read, search, edit, bash, git, and more) to finish software tasks.
+It is designed to make weaker/slower/quantized/local models more reliable by enforcing:
+- explicit planning
+- compact repo memory
+- visible context governance
+- scoped validation
+- bounded repair
 
-Repo status: thoroughly Villani.
+## What Villani is
 
-Practical automation, Villani presentation.
+Villani is a terminal-first coding agent that runs against local or remote OpenAI-compatible endpoints and keeps its control decisions explicit.
 
-## What it does
+## What Villani is optimized for
 
-- Runs an agent loop against your repo.
-- Streams model output in terminal or interactive TUI mode.
-- Uses tool calls for file operations, shell commands, and git actions.
-- Applies a permission/approval policy before sensitive actions.
-- Stores checkpoints/transcripts under `.villani_code/` for traceability.
+- Fix one failing test.
+- Fix lint/type errors.
+- Make a narrow refactor.
+- Update docs safely with scoped checks.
+- Inspect a repo and produce a safe execution plan without edits.
 
-Lightweight agent, heavyweight Villani energy.
+## What constrained inference means here
 
-## Ministry of Villani
+Constrained inference = small context budgets, weaker model reasoning, and slower responses.
 
-Official operating phrases for approved terminal overlords:
+Villani addresses this with:
+- compact `.villani/` memory files
+- deterministic context compaction
+- context pressure estimation (low/moderate/high/overflow)
+- stale-context detection and checkpoint/reset handoff
 
-- Keep calm and dominate the workspace.
-- Precision coding, theatrical menace.
-- Local agent, global Villani agenda.
-- Prompt first, ask questions never.
-- Terminal infused with lawful evil.
-- One more pass of strategic sabotage (of bad code).
-- The terminal yearns for Villani.
-- Operated by advanced evil engineering.
-- Approved for controlled chaos.
-- Warning: excessive Villani may improve throughput.
+## Core workflow
 
-## Install
+1. Initialize repo memory (`villani-code init`).
+2. Classify task mode and generate explicit plan.
+3. Build visible active context inventory.
+4. Prune/compact context under budget pressure.
+5. Execute minimal edits.
+6. Run mode-appropriate validation (targeted first).
+7. Attempt bounded repair when needed.
+8. Emit outcome summary with touched files, validation breadth, and scope adherence.
 
-Install with a totally unreasonable amount of Villani:
+## `.villani/` memory files
 
+- `.villani/repo_map.json`
+- `.villani/validation.json`
+- `.villani/project_rules.md`
+- `.villani/session_state.json`
+- `.villani/context_state.json` (active/excluded context, pressure, pruning, compaction)
+- `.villani/session_checkpoints/*.json` (compact checkpoint handoff)
+
+## Context governance
+
+Use:
+- `villani-code context [--json]`
+- `villani-code checkpoint "summary"`
+- `villani-code reset-from-checkpoint <checkpoint_id>`
+
+Context output includes:
+- active context sources
+- excluded candidates and reasons
+- pressure estimate and level
+- compaction outcomes
+- stale-context signals
+
+## Validation and bounded repair
+
+Validation defaults are task-mode aware:
+- failing test fixes prioritize targeted tests
+- lint/type fixes prioritize static checks
+- docs updates skip code-heavy validation
+- inspect-and-plan mode uses inspection-only validation
+
+Repair loops are bounded by `--max-repair-attempts`.
+
+## Eval harness
+
+Run:
+- `villani-code eval`
+- `villani-code eval --json`
+
+Reports include:
+- task success/failure
+- validation success/failure
+- files touched
+- unnecessary files touched
+- context size estimate
+- context pruning events
+- repair attempts used
+- catastrophic failure flag
+- risk classification
+- validation breadth used
+- elapsed time
+- outcome status
+
+## Safety / high-risk behavior
+
+Villani favors narrow touch sets and early stop conditions when:
+- risk grows beyond expected task bounds
+- scope drifts beyond requested mode
+- validation breadth escalates unexpectedly
+- repeated repair attempts fail
+
+## CLI examples
+
+Inspect repo and produce plan:
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+villani-code run "inspect repo and produce safe execution plan with no edits" --base-url http://localhost:8000 --model local-model
 ```
 
-Freshly Villani and medically inadvisable.
-
-Development install (includes test tools and TUI dependencies):
-
+Fix failing test with scoped validation:
 ```bash
-pip install -e ".[dev]"
-pytest -q
+villani-code run "fix failing test in tests/test_parser.py" --base-url http://localhost:8000 --model local-model
 ```
 
-Applied artisanal evil by hand.
-
-## API compatibility
-
-Villani Code supports two provider styles:
-
-- `anthropic` (default): `POST {base_url}/v1/messages`
-- `openai`: `POST {base_url}/v1/chat/completions`
-
-Bringing order to chaos, then adding evil back.
-
-Provider selection:
-
+Inspect active context:
 ```bash
---provider anthropic|openai
+villani-code context --json
 ```
 
-API key lookup:
-
-- `--api-key` (explicit, optional)
-- if omitted and `--provider openai`: `OPENAI_API_KEY`
-- if omitted and `--provider anthropic`: `ANTHROPIC_API_KEY`
-
-## Core commands
-
-Villani at the command line.
-
-### 1) Default interactive mode (no subcommand)
-
-When you run `villani-code` with no subcommand, interactive mode starts.
-
+Run eval suite:
 ```bash
-villani-code --base-url http://localhost:8000 --model local-model
+villani-code eval --suite tests/fixtures/eval/suite.json --json
 ```
 
-Your repo has been approached by a caped coding menace.
-
-### 2) Explicit interactive mode
-
+Create checkpoint and reset:
 ```bash
-villani-code interactive --base-url http://localhost:8000 --model local-model
+villani-code checkpoint "after targeted test fix"
+villani-code reset-from-checkpoint 20260101T000000Z
 ```
-
-Interactive mode, now with irresponsible amounts of evil.
-
-### 3) One-shot run mode
-
-```bash
-villani-code run "summarize this repo" --base-url http://localhost:8000 --model local-model
-```
-
-One prompt in, one useful answer out, plus traces of theatrical panic.
-
-
-### 4) Villani mode (autonomous self-directed improvement)
-
-Villani mode is a first-class autonomous mode. It starts immediately without waiting for a user prompt, runs repo reconnaissance, ranks intervention opportunities, executes in bounded waves, adversarially verifies every wave, and stops when confidence/risk constraints require it.
-
-```bash
-villani-code villani-mode --base-url http://localhost:8000 --model local-model
-```
-
-You can also enable it from interactive entrypoints:
-
-```bash
-villani-code interactive --villani-mode --base-url http://localhost:8000 --model local-model
-villani-code interactive --villani-mode --base-url http://localhost:8000 --model local-model
-villani-code --villani-mode --base-url http://localhost:8000 --model local-model
-```
-
-Optional steering objective:
-
-```bash
-villani-code villani-mode "improve docs consistency" --base-url http://localhost:8000 --model local-model
-```
-
-Safety behavior in Villani mode:
-- normal repo-local write/patch/test commands auto-resolve approval prompts
-- hard destructive shell denylist remains active
-- denied commands are recorded as blockers unless you explicitly pass `--unsafe`
-
-New autonomy behaviors:
-- **Adversarial self-verification:** after meaningful edits/validation commands, Villani runs a compact reviewer pass focused on regressions, incomplete edits, stale references/docs, side effects, and test gaps.
-- **Failure-aware autonomy:** failures are classified (for example `test_failure`, `repo_ambiguity`, `verification_failure`, `repeated_no_progress`) and the next strategy changes based on class.
-- **Confidence + risk summaries:** each wave reports confidence and risk level, plus why the intervention was chosen.
-
-Villani mode stop conditions:
-- no remaining opportunities above confidence threshold
-- blast radius exceeded configured wave constraints
-- repeated failure patterns indicate no progress
-- max wave limit reached
-
-
-
-### 5) Initialize compact project memory
-
-```bash
-villani-code init --repo .
-```
-
-This creates deterministic compact state under `.villani/`:
-- `project_rules.md` (derived from detected tools/layout, not generic templates)
-- `validation.json` (typed validation steps with cost, scope, and targeting strategy metadata)
-- `repo_map.json` (languages/frameworks, source/test/package roots, manifests/lockfiles/configs, entrypoints, build/CI hints, source↔test patterns)
-- `session_state.json` (compact checkpoint fields for plan evidence/impact, validation plan summary, repair attempts, and handoff hints)
-
-Lazy init is also enabled: if `.villani/` is missing when a task starts, Villani initializes it before planning.
-
-## Plan Mode and validation loop defaults
-
-- Plan Mode is on by default for non-trivial tasks.
-- Planning is grounded in repository evidence (repo map, manifests/configs, inferred targets, action classes, and scope) instead of pure keyword heuristics.
-- Interactive mode shows the full execution plan inline and requires approval before execution.
-- Autonomous Villani mode auto-approves low/medium risk plans and safely aborts high-risk plans without a confirmation path.
-- After edits, validation builds a scoped plan first (docs-only short-circuit, targeted test inference, config/manifest escalation), then executes in relevance/cost order.
-- On validation failure, Villani runs a dedicated bounded repair executor (default: 2 attempts) and reports unresolved failures with compact summaries.
-
-Useful options:
-- `--plan-mode off|auto|strict`
-- `--max-repair-attempts N`
-
-### Common options
-
-- `--base-url` API server root URL
-- `--model` model name
-- `--repo` target repository path (default: `.`)
-- `--max-tokens` max output tokens per model call
-- `--small-model` enable constrained-model support mode
-- `--provider anthropic|openai`
-- `--api-key <token>`
-
-Code review with traces of Villani.
-
-## Typical workflow (end-to-end)
-
-Now entering a high-Villani environment.
-
-```text
-1) Start Villani Code (interactive or run mode)
-2) Submit a task
-3) Agent builds context (system rules + repo state)
-4) Agent requests model output
-5) If tool calls are returned:
-   - run permission policy (deny/ask/allow)
-   - execute approved tools
-   - append tool results
-   - continue loop
-6) If no more tool calls:
-   - produce final response
-   - write transcript/checkpoint artifacts
-```
-
-The clean room has been contaminated with delightful evil.
-
-## Agent loop diagram
-
-A flowchart of disciplined logic and questionable vibes:
-
-```text
-+-------------------+
-| User prompt/input |
-+---------+---------+
-          |
-          v
-+---------------------------+
-| Build run context         |
-| - system/developer rules  |
-| - repo + session state    |
-+-------------+-------------+
-              |
-              v
-+---------------------------+
-| Plan next action          |
-| (reasoning + constraints) |
-+-------------+-------------+
-              |
-              v
-+---------------------------+
-| Need a tool call?         |
-+--------+------------------+
-         | yes                         no
-         v                             v
-+---------------------------+   +----------------------+
-| Permission/safety check   |   | Draft direct answer  |
-| (deny/ask/allow policies) |   | from current context |
-+-------------+-------------+   +----------+-----------+
-              |                            |
-              v                            |
-+---------------------------+              |
-| Execute tool(s)           |              |
-| (read/edit/bash/mcp/etc.) |              |
-+-------------+-------------+              |
-              |                            |
-              v                            |
-+---------------------------+              |
-| Observe results           |<-------------+
-| Update memory/checkpoints |
-+-------------+-------------+
-              |
-              v
-+---------------------------+
-| Stop criteria met?        |
-+--------+------------------+
-         | no                         yes
-         v                            v
-   (loop back to plan)      +----------------------+
-                             | Final response       |
-                             | + transcript outputs |
-                             +----------------------+
-```
-
-## Interactive mode notes
-
-This is where the terminal theater actually happens:
-
-- Inline approval prompts appear when policy requires confirmation.
-- Streaming output is shown live.
-- Scrolling/follow behavior is built into the TUI.
-
-You drive. The agent improvises. The permission policy is the adult in the room.
-
-Prompt first, ask questions never. (Menacingly.)
-
-## Useful additional commands
-
-Extensions, integrations, and controlled chaos:
-
-```bash
-villani-code mcp list
-villani-code mcp add <name> <type> <endpoint>
-villani-code mcp remove <name>
-villani-code mcp reset-project-choices
-
-villani-code plugin install <path>
-villani-code plugin list
-villani-code plugin remove <name>
-```
-
-Practical plugins, impractical Villani swagger.
-
-## Help
-
-For when you need less drama and more flags:
-
-```bash
-villani-code --help
-villani-code run --help
-villani-code interactive --help
-```
-
-Maximum Villani, minimum guesswork.

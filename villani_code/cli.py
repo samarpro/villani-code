@@ -16,8 +16,10 @@ from villani_code.interactive import InteractiveShell
 from villani_code.openai_client import OpenAIClient
 from villani_code.plugins import PluginManager
 from villani_code.state import Runner
+from villani_code.context_governance import ContextGovernanceManager
+from villani_code.eval_harness import render_human_summary, result_to_json, run_eval_suite
 
-app = typer.Typer(help="Villani Code terminal agent runner")
+app = typer.Typer(help="Villani: constrained-inference coding agent with visible context governance")
 mcp_app = typer.Typer(help="Manage MCP servers")
 plugin_app = typer.Typer(help="Manage local plugins")
 app.add_typer(mcp_app, name="mcp")
@@ -172,6 +174,63 @@ def init(
         console.print(f"- {key}: {path}")
 
 
+
+
+@app.command("context")
+def context_cmd(
+    repo: Path = typer.Option(Path("."), "--repo", help="Repository path"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable context inventory"),
+) -> None:
+    manager = ContextGovernanceManager(repo.resolve())
+    inventory = manager.load_inventory()
+    payload = manager._to_dict(inventory)
+    if json_output:
+        console.print_json(json.dumps(payload))
+        return
+    console.print(f"Task: {inventory.task_id}")
+    budget = inventory.budget
+    if budget:
+        console.print(f"Pressure: {budget.pressure_level.value} ({budget.total_units}/{budget.budget_limit})")
+    console.print("Active context:")
+    for item in inventory.active_items:
+        console.print(f"- {item.source_id} [{item.source_type}] reason={item.included_reason.value if item.included_reason else '-'} pressure={item.pressure_share}")
+    console.print("Excluded candidates:")
+    for item in inventory.excluded_items[-20:]:
+        console.print(f"- {item.source_id} excluded={item.excluded_reason.value if item.excluded_reason else '-'} why={item.why}")
+
+
+@app.command("checkpoint")
+def checkpoint_cmd(
+    task_summary: str = typer.Argument("manual checkpoint"),
+    repo: Path = typer.Option(Path("."), "--repo", help="Repository path"),
+) -> None:
+    manager = ContextGovernanceManager(repo.resolve())
+    inventory = manager.load_inventory()
+    checkpoint = manager.create_checkpoint(inventory, task_summary, ["manual checkpoint from CLI"])
+    console.print(f"Created checkpoint {checkpoint.checkpoint_id}")
+
+
+@app.command("reset-from-checkpoint")
+def reset_from_checkpoint_cmd(
+    checkpoint_id: str = typer.Argument(...),
+    repo: Path = typer.Option(Path("."), "--repo", help="Repository path"),
+) -> None:
+    manager = ContextGovernanceManager(repo.resolve())
+    checkpoint = manager.reset_from_checkpoint(checkpoint_id)
+    console.print(f"Reset context from checkpoint {checkpoint.checkpoint_id}")
+
+
+@app.command("eval")
+def eval_cmd(
+    suite: Path = typer.Option(Path("tests/fixtures/eval/suite.json"), "--suite", help="Eval suite JSON file"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable eval report"),
+) -> None:
+    result = run_eval_suite(suite.resolve())
+    payload = result_to_json(result)
+    if json_output:
+        console.print_json(json.dumps(payload))
+        return
+    console.print(render_human_summary(result))
 @mcp_app.command("list")
 def mcp_list(repo: Path = typer.Option(Path("."), "--repo")):
     from villani_code.mcp import load_mcp_config
