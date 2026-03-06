@@ -20,7 +20,6 @@ from villani_code.autonomy import (
     VerificationEngine,
     VerificationStatus,
 )
-from villani_code.execution import VILLANI_TASK_BUDGET
 from villani_code.shells import (
     baseline_import_validation_command,
     classify_shell_portability_failure,
@@ -147,8 +146,20 @@ class VillaniModeController:
             risk=state.current_risk_level,
         )
 
-        for wave in range(1, self.takeover_config.max_waves + 1):
-            if self._attempt_counter >= self.takeover_config.max_total_task_attempts:
+        wave = 0
+        stagnation_cycles = 0
+        prior_changed_snapshot = set(self._git_changed_files())
+
+        while True:
+            wave += 1
+            if self.takeover_config.max_waves > 0 and wave > self.takeover_config.max_waves:
+                if self._has_pending_actionable_work():
+                    return self._build_takeover_summary(state, "Villani mode budget exhausted.")
+                return self._build_takeover_summary(state, self._stop_reason_from_categories())
+            if (
+                self.takeover_config.max_total_task_attempts > 0
+                and self._attempt_counter >= self.takeover_config.max_total_task_attempts
+            ):
                 return self._build_takeover_summary(state, "Villani mode budget exhausted.")
 
             state.repo_summary = self.planner.build_repo_summary()
@@ -183,7 +194,10 @@ class VillaniModeController:
                     )
                 return self._build_takeover_summary(state, self._stop_reason_from_categories())
 
-            selected = candidates[: self.takeover_config.max_commands_per_wave]
+            if self.takeover_config.max_commands_per_wave > 0:
+                selected = candidates[: self.takeover_config.max_commands_per_wave]
+            else:
+                selected = candidates
             self._emit("autonomous_phase", phase=f"Villani mode wave {wave}")
             self._emit(
                 "takeover_wave",
@@ -198,8 +212,8 @@ class VillaniModeController:
             blocked = 0
             for index, op in enumerate(selected, start=1):
                 if (
-                    self._attempt_counter
-                    >= self.takeover_config.max_total_task_attempts
+                    self.takeover_config.max_total_task_attempts > 0
+                    and self._attempt_counter >= self.takeover_config.max_total_task_attempts
                 ):
                     return self._build_takeover_summary(
                         state, "Villani mode budget exhausted."
@@ -276,11 +290,8 @@ class VillaniModeController:
                     blocked += 1
                 self.attempted.append(task)
 
-            if len(wave_files) > self.takeover_config.max_files_per_wave:
+            if self.takeover_config.max_files_per_wave > 0 and len(wave_files) > self.takeover_config.max_files_per_wave:
                 state.current_risk_level = "high"
-                return self._build_takeover_summary(
-                    state, "Blast radius exceeded configured max files per wave."
-                )
 
             if wave_files and not self._wave_has_validation_artifact(
                 self.attempted[-len(selected) :]
@@ -312,9 +323,33 @@ class VillaniModeController:
                 risk=state.current_risk_level,
             )
 
-        if self._has_pending_actionable_work():
-            return self._build_takeover_summary(state, "Villani mode budget exhausted.")
-        return self._build_takeover_summary(state, self._stop_reason_from_categories())
+            current_changes = set(self._git_changed_files())
+            progress_made = (
+                current_changes != prior_changed_snapshot
+                or retired > 0
+                or bool(wave_files)
+            )
+            if progress_made:
+                stagnation_cycles = 0
+            else:
+                stagnation_cycles += 1
+                self._emit(
+                    "takeover_stagnation",
+                    wave=wave,
+                    count=stagnation_cycles,
+                    limit=self.takeover_config.stagnation_cycle_limit,
+                )
+            prior_changed_snapshot = current_changes
+
+            if (
+                self.takeover_config.stagnation_cycle_limit > 0
+                and stagnation_cycles >= self.takeover_config.stagnation_cycle_limit
+            ):
+                return self._build_takeover_summary(
+                    state,
+                    f"No meaningful progress after {stagnation_cycles} consecutive cycles.",
+                )
+
 
     def inspect_repo(self) -> RepoSnapshot:
         files = sorted(
@@ -479,7 +514,7 @@ class VillaniModeController:
                     affected_files=task.intentional_changes or op.affected_files,
                     evidence="Validation task edited files but produced no validation evidence.",
                     blast_radius="small",
-                    proposed_next_action="run bounded validation only on recently changed files",
+                    proposed_next_action="run focused validation only on recently changed files",
                     task_contract=TaskContract.VALIDATION.value,
                 )
             )
@@ -568,7 +603,7 @@ class VillaniModeController:
             affected_files=changed_files[:5],
             evidence="Authoritative files changed without successful validation artifact.",
             blast_radius="small",
-            proposed_next_action="run bounded validation path for recently changed files",
+            proposed_next_action="run focused validation path for recently changed files",
             task_contract=TaskContract.VALIDATION.value,
         )
 
@@ -587,27 +622,27 @@ class VillaniModeController:
         task.status = TaskLifecycle.RUNNING.value
         self._emit("autonomous_phase", phase=f"Villani mode task started: {task.title}")
         objective = (
-            "You are in Villani mode. Execute one bounded intervention and summarize exact edits and validation. "
+            "You are in Villani mode. Execute the selected intervention end-to-end, make meaningful repository improvements, and summarize exact edits and validation. "
             f"Intervention: {task.title}\nEvidence: {task.rationale}"
         )
-        if task.title == "Inspect repo for highest-leverage small improvement":
+        if task.title == "Inspect repo for highest-leverage improvement":
             objective += (
-                "\nFollow this bounded inspection plan in order where files exist: "
+                "\nFollow this inspection plan in order where files exist: "
                 "1) top-level README.md or README.rst, 2) pyproject.toml, "
                 "3) package root directory or src/ layout, 4) up to 3 representative Python source files, "
                 "5) existing test files if any. Then produce exactly one of: "
                 "small safe code improvement, small safe docs improvement, minimal test bootstrap, "
-                "or conclude no clear bounded improvement is justified."
+                "or conclude no clear improvement is justified."
             )
         if task.title == "Validate baseline importability":
             family = shell_family_for_platform(sys.platform)
             cmd = baseline_import_validation_command(family)
             objective += (
-                "\nValidation contract (mandatory): inspect relevant package layout first, then run one bounded import validation command "
+                "\nValidation contract (mandatory): inspect relevant package layout first, then run one import validation command "
                 f"(prefer {cmd}), capture the executed command output and exit code, and only then summarize result. "
                 "No network, no installs, and no broad recursive execution."
             )
-        result = self.runner.run(objective, execution_budget=VILLANI_TASK_BUDGET)
+        result = self.runner.run(objective, execution_budget=None)
         task.outcome = "\n".join(
             block.get("text", "")
             for block in result.get("response", {}).get("content", [])

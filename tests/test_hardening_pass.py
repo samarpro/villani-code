@@ -159,11 +159,14 @@ def test_session_state_checkpoint_fields_roundtrip(tmp_path: Path) -> None:
     assert payload["action_classes"] == ["code_edit"]
 
 
-def test_autonomous_high_risk_safe_abort(tmp_path: Path) -> None:
+def test_autonomous_high_risk_auto_approved(tmp_path: Path) -> None:
     _seed_repo(tmp_path)
     runner = Runner(client=DummyClient(), repo=tmp_path, model="m", stream=False, villani_mode=True)
-    with pytest.raises(RuntimeError):
-        state_runtime.ensure_project_memory_and_plan(runner, "delete files and rewrite history")
+    events: list[dict] = []
+    runner.event_callback = events.append
+    state_runtime.ensure_project_memory_and_plan(runner, "delete files and rewrite history")
+    assert any(e.get("type") == "plan_auto_approved" for e in events)
+    assert not any(e.get("type") == "plan_aborted" for e in events)
 
 
 def test_interactive_plan_approval_still_works(tmp_path: Path) -> None:

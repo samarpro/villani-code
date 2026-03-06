@@ -130,7 +130,7 @@ def test_fallback_opportunity_created_when_no_other_heuristics_fire(
     ops = planner.discover_opportunities()
 
     assert [op.title for op in ops] == [
-        "Inspect repo for highest-leverage small improvement"
+        "Inspect repo for highest-leverage improvement"
     ]
 
 
@@ -242,13 +242,13 @@ def test_rank_order_prefers_real_python_repo_work_over_docs_drift(
     assert ranked[0].title == "Bootstrap minimal tests"
 
 
-def test_fallback_inspection_is_bounded(tmp_path: Path) -> None:
+def test_fallback_inspection_prompt_guides_repo_scan(tmp_path: Path) -> None:
     runner = PromptCapturingRunner(tmp_path)
     controller = VillaniModeController(runner, tmp_path)
     task = next(
         t
         for t in controller.generate_candidates(controller.inspect_repo())
-        if t.title == "Inspect repo for highest-leverage small improvement"
+        if t.title == "Inspect repo for highest-leverage improvement"
     )
 
     controller._execute_task(task)
@@ -258,7 +258,7 @@ def test_fallback_inspection_is_bounded(tmp_path: Path) -> None:
     assert "4) up to 3 representative Python source files" in prompt
 
 
-def test_wave_execution_limits(tmp_path: Path) -> None:
+def test_wave_execution_limits_with_explicit_config(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
     (tmp_path / "README.md").write_text("TODO\n", encoding="utf-8")
     controller = VillaniModeController(
