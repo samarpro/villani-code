@@ -5,7 +5,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-
 VILLANI_DIR = ".villani"
 
 LANGUAGE_EXTENSIONS: dict[str, tuple[str, ...]] = {
@@ -24,6 +23,10 @@ MANIFEST_FILES = {
     "package.json",
     "Cargo.toml",
     "go.mod",
+    "poetry.lock",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
 }
 
 CONFIG_HINT_FILES = {
@@ -39,6 +42,7 @@ CONFIG_HINT_FILES = {
     ".eslintrc.json",
     "Makefile",
     "justfile",
+    ".pre-commit-config.yaml",
 }
 
 ENTRYPOINT_HINTS = {
@@ -55,16 +59,23 @@ ENTRYPOINT_HINTS = {
 class RepoMap:
     languages: list[str] = field(default_factory=list)
     frameworks: list[str] = field(default_factory=list)
+    package_managers: list[str] = field(default_factory=list)
     package_roots: list[str] = field(default_factory=list)
     source_roots: list[str] = field(default_factory=list)
     test_roots: list[str] = field(default_factory=list)
     docs_roots: list[str] = field(default_factory=list)
     manifests: list[str] = field(default_factory=list)
+    lockfiles: list[str] = field(default_factory=list)
     config_files: list[str] = field(default_factory=list)
+    major_configs: list[str] = field(default_factory=list)
     likely_entrypoints: list[str] = field(default_factory=list)
+    build_system_hints: list[str] = field(default_factory=list)
+    ci_hints: list[str] = field(default_factory=list)
+    generated_code_hints: list[str] = field(default_factory=list)
+    package_test_relationships: list[dict[str, str]] = field(default_factory=list)
+    source_test_patterns: list[dict[str, str]] = field(default_factory=list)
     validation_toolchain_hints: list[str] = field(default_factory=list)
-    repo_shape: str = "monolithic"
-    module_relationships: list[str] = field(default_factory=list)
+    repo_shape: str = "single_package"
     summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -95,6 +106,8 @@ class ValidationStep:
     scope_hint: str = "project"
     language_family: str = ""
     target_strategy: str = "none"
+    escalation_role: str = "optional"
+    typical_trigger_conditions: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -121,6 +134,8 @@ class ValidationConfig:
                     scope_hint=str(row.get("scope_hint", "project")),
                     language_family=str(row.get("language_family", "")),
                     target_strategy=str(row.get("target_strategy", "none")),
+                    escalation_role=str(row.get("escalation_role", "optional")),
+                    typical_trigger_conditions=[str(v) for v in row.get("typical_trigger_conditions", []) if isinstance(v, (str, int, float))],
                 )
             )
         return cls(steps=steps)
@@ -131,29 +146,22 @@ class SessionState:
     task_summary: str = ""
     plan_summary: str = ""
     plan_risk: str = ""
+    grounding_evidence_summary: list[str] = field(default_factory=list)
     action_classes: list[str] = field(default_factory=list)
     estimated_scope: str = ""
+    change_impact: str = ""
+    candidate_targets_summary: list[str] = field(default_factory=list)
     affected_files: list[str] = field(default_factory=list)
+    validation_plan_summary: list[str] = field(default_factory=list)
     validation_summary: str = ""
     last_failed_step: str = ""
     repair_attempt_summaries: list[dict[str, Any]] = field(default_factory=list)
     outcome_status: str = "pending"
-    checkpoint_note: str = ""
-
-    # compatibility fields
-    current_task_summary: str = ""
-    last_approved_plan_summary: str = ""
-    repair_attempts: list[dict[str, Any]] = field(default_factory=list)
+    next_step_hints: list[str] = field(default_factory=list)
+    handoff_checkpoint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        payload = asdict(self)
-        if not payload["task_summary"]:
-            payload["task_summary"] = payload["current_task_summary"]
-        if not payload["plan_summary"]:
-            payload["plan_summary"] = payload["last_approved_plan_summary"]
-        if not payload["repair_attempt_summaries"] and payload["repair_attempts"]:
-            payload["repair_attempt_summaries"] = payload["repair_attempts"]
-        return payload
+        return asdict(self)
 
 
 @dataclass(slots=True)
@@ -168,18 +176,14 @@ def _iter_repo_paths(repo: Path) -> RepoDiscovery:
     files: list[str] = []
     language_counts = {k: 0 for k in LANGUAGE_EXTENSIONS}
     for path in repo.rglob("*"):
-        if any(part.startswith(".") and part not in {".github"} for part in path.parts if part not in {"."}):
-            if ".villani" in path.parts:
-                continue
-            if ".git" in path.parts:
-                continue
-        if path.is_dir():
-            rel = path.relative_to(repo).as_posix()
-            if rel:
-                dirs.add(rel)
-            continue
         rel = path.relative_to(repo).as_posix()
-        if rel.startswith(".villani/"):
+        if not rel:
+            continue
+        parts = path.parts
+        if any(part in {".git", ".villani", ".villani_code", "node_modules", ".venv", "venv", "dist", "build", "__pycache__"} for part in parts):
+            continue
+        if path.is_dir():
+            dirs.add(rel)
             continue
         files.append(rel)
         suffix = path.suffix.lower()
@@ -189,133 +193,170 @@ def _iter_repo_paths(repo: Path) -> RepoDiscovery:
     return RepoDiscovery(directories=sorted(dirs), files=sorted(files), language_counts=language_counts)
 
 
-def _infer_roots(paths: list[str], predicate: Any) -> list[str]:
-    roots = sorted({p for p in paths if predicate(p)})
-    return roots[:12]
-
-
 def _infer_languages(discovery: RepoDiscovery, manifests: list[str]) -> list[str]:
-    langs = {lang for lang, count in discovery.language_counts.items() if count > 0}
-    for manifest in manifests:
-        if manifest.startswith("pyproject") or manifest.startswith("requirements") or manifest.startswith("setup"):
-            langs.add("python")
-        if manifest == "package.json":
-            langs.update({"javascript", "typescript"})
-        if manifest == "Cargo.toml":
-            langs.add("rust")
-        if manifest == "go.mod":
-            langs.add("go")
-    return sorted(langs)
+    langs = [k for k, v in discovery.language_counts.items() if v > 0]
+    names = {Path(m).name for m in manifests}
+    if {"pyproject.toml", "requirements.txt", "setup.py", "setup.cfg"} & names:
+        langs.append("python")
+    if "package.json" in names:
+        langs.extend(["javascript", "typescript"])
+    if "Cargo.toml" in names:
+        langs.append("rust")
+    if "go.mod" in names:
+        langs.append("go")
+    return sorted(set(langs))
 
 
-def _infer_frameworks(files: list[str], manifests: list[str]) -> list[str]:
+def _infer_frameworks(files: list[str], manifests: list[str], configs: list[str]) -> list[str]:
+    text = " ".join(files + manifests + configs).lower()
     frameworks: set[str] = set()
-    text = " ".join(files + manifests).lower()
-    if "pytest" in text or "pytest.ini" in text:
-        frameworks.add("pytest")
-    if "mypy" in text:
-        frameworks.add("mypy")
-    if "ruff" in text:
-        frameworks.add("ruff")
-    if "django" in text or "manage.py" in files:
-        frameworks.add("django")
+    for marker, name in [
+        ("pytest", "pytest"),
+        ("mypy", "mypy"),
+        ("ruff", "ruff"),
+        ("django", "django"),
+        ("fastapi", "fastapi"),
+        ("flask", "flask"),
+        ("vitest", "vitest"),
+        ("jest", "jest"),
+    ]:
+        if marker in text:
+            frameworks.add(name)
     return sorted(frameworks)
+
+
+def _source_roots(repo: Path, discovery: RepoDiscovery) -> list[str]:
+    roots: set[str] = set()
+    if (repo / "src").exists():
+        roots.add("src")
+    for file in discovery.files:
+        p = Path(file)
+        if p.suffix in {".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".go"}:
+            top = p.parts[0]
+            if top not in {"tests", "test", "docs"}:
+                roots.add(top)
+    return sorted(roots)[:12]
+
+
+def _test_roots(discovery: RepoDiscovery) -> list[str]:
+    roots: set[str] = set()
+    for d in discovery.directories:
+        if d == "tests" or d.startswith("tests/") or d.endswith("/__tests__"):
+            roots.add(d.split("/")[0] if d.startswith("tests/") else d)
+    for file in discovery.files:
+        if file.startswith("tests/") or file.endswith("_test.py") or file.endswith(".spec.ts") or file.endswith(".test.ts"):
+            roots.add("tests")
+    return sorted(roots)[:12]
+
+
+def _package_test_relationships(source_roots: list[str], test_roots: list[str]) -> list[dict[str, str]]:
+    pairs: list[dict[str, str]] = []
+    for src in source_roots:
+        test = "tests" if "tests" in test_roots else (test_roots[0] if test_roots else "")
+        if test:
+            pairs.append({"package_root": src, "test_root": test, "relationship": "nearby_or_mirrored"})
+    return pairs[:12]
+
+
+def _source_test_patterns(source_roots: list[str], test_roots: list[str]) -> list[dict[str, str]]:
+    patterns: list[dict[str, str]] = []
+    if any(r == "src" for r in source_roots) and test_roots:
+        patterns.append({"source_pattern": "src/<module>.py", "test_pattern": "tests/test_<module>.py"})
+        patterns.append({"source_pattern": "src/<pkg>/<module>.py", "test_pattern": "tests/<pkg>/test_<module>.py"})
+    if any(r != "src" for r in source_roots) and test_roots:
+        patterns.append({"source_pattern": "<pkg>/<module>.py", "test_pattern": "tests/test_<module>.py"})
+    return patterns[:8]
+
+
+def _package_managers(manifests: list[str], lockfiles: list[str]) -> list[str]:
+    names = {Path(m).name for m in manifests + lockfiles}
+    managers: set[str] = set()
+    if {"pyproject.toml", "requirements.txt", "poetry.lock"} & names:
+        managers.add("python")
+    if {"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"} & names:
+        managers.add("node")
+    if "Cargo.toml" in names:
+        managers.add("cargo")
+    if "go.mod" in names:
+        managers.add("go")
+    return sorted(managers)
+
+
+def _repo_shape(source_roots: list[str], manifests: list[str]) -> str:
+    top_manifests = {Path(m).parts[0] for m in manifests if "/" in m}
+    if any(root.startswith("packages") for root in source_roots) or len(top_manifests) > 1:
+        return "multi_root"
+    if len(source_roots) > 2:
+        return "multi_root"
+    return "single_package"
 
 
 def _build_validation_steps(repo_map: RepoMap) -> list[ValidationStep]:
     steps: list[ValidationStep] = []
-    manifests = set(repo_map.manifests)
-    configs = set(repo_map.config_files)
     has_python = "python" in repo_map.languages
-
     if has_python:
-        if {"ruff.toml", ".ruff.toml", "pyproject.toml"} & (configs | manifests):
-            steps.append(ValidationStep("ruff-format-check", "python -m ruff format --check .", "format", 1, False, scope_hint="repo", language_family="python", target_strategy="changed_files"))
-            steps.append(ValidationStep("ruff-check", "python -m ruff check .", "lint", 1, False, scope_hint="repo", language_family="python", target_strategy="changed_files"))
-        if {"mypy.ini", "pyproject.toml"} & (configs | manifests):
-            target = repo_map.package_roots[0] if repo_map.package_roots else "."
-            steps.append(ValidationStep("mypy", f"python -m mypy {target}", "typecheck", 2, False, scope_hint="package", language_family="python", target_strategy="package"))
+        steps.append(ValidationStep("ruff-format-check", "python -m ruff format --check .", "format", 1, False, scope_hint="repo", language_family="python", target_strategy="changed_files", escalation_role="early_signal", typical_trigger_conditions=["python_changed", "formatting_only"]))
+        steps.append(ValidationStep("ruff-check", "python -m ruff check .", "lint", 1, False, scope_hint="repo", language_family="python", target_strategy="changed_files", escalation_role="early_signal", typical_trigger_conditions=["python_changed", "config_changed"]))
+        steps.append(ValidationStep("mypy", "python -m mypy .", "typecheck", 2, False, scope_hint="repo", language_family="python", target_strategy="package", escalation_role="medium_gate", typical_trigger_conditions=["python_changed", "api_changed"]))
         if repo_map.test_roots:
-            steps.append(ValidationStep("pytest-targeted", "python -m pytest -q", "test", 2, False, scope_hint="targeted", language_family="python", target_strategy="related_tests"))
-            steps.append(ValidationStep("pytest", "python -m pytest", "test", 4, False, scope_hint="repo", language_family="python", target_strategy="full"))
-
-    if "typescript" in repo_map.languages or "javascript" in repo_map.languages:
-        if "package.json" in manifests:
-            steps.append(ValidationStep("npm-lint", "npm run lint --if-present", "lint", 2, False, scope_hint="repo", language_family="node", target_strategy="full"))
-            steps.append(ValidationStep("npm-test", "npm test --if-present", "test", 4, False, scope_hint="repo", language_family="node", target_strategy="full"))
-
+            steps.append(ValidationStep("pytest-targeted", "python -m pytest -q", "test", 2, False, scope_hint="targeted", language_family="python", target_strategy="related_tests", escalation_role="targeted_first", typical_trigger_conditions=["test_changed", "source_changed"]))
+            steps.append(ValidationStep("pytest", "python -m pytest", "test", 4, False, scope_hint="repo", language_family="python", target_strategy="full", escalation_role="broad_safety_net", typical_trigger_conditions=["manifest_changed", "dependency_changed", "broad_change"]))
+    if "javascript" in repo_map.languages or "typescript" in repo_map.languages:
+        steps.append(ValidationStep("npm-lint", "npm run lint --if-present", "lint", 2, False, scope_hint="repo", language_family="node", target_strategy="full", escalation_role="early_signal", typical_trigger_conditions=["node_changed", "manifest_changed"]))
+        steps.append(ValidationStep("npm-test", "npm test --if-present", "test", 4, False, scope_hint="repo", language_family="node", target_strategy="full", escalation_role="broad_safety_net", typical_trigger_conditions=["node_changed", "dependency_changed"]))
     if not steps:
-        steps.append(ValidationStep("git-diff", "git diff --stat", "inspection", 1, False, scope_hint="repo", language_family="generic", target_strategy="none"))
-
+        steps.append(ValidationStep("git-diff", "git diff --stat", "inspection", 1, False, scope_hint="repo", language_family="generic", target_strategy="none", escalation_role="fallback", typical_trigger_conditions=["unknown"]))
     return sorted(steps, key=lambda s: (s.cost_level, s.kind, s.name))
-
-
-def _shape_from_roots(source_roots: list[str]) -> str:
-    if len(source_roots) >= 4:
-        return "multi_root"
-    if any(root.startswith("packages/") for root in source_roots):
-        return "package_based"
-    return "monolithic"
-
-
-def _module_relationships(repo_map: RepoMap) -> list[str]:
-    relations: list[str] = []
-    for test_root in repo_map.test_roots:
-        for src_root in repo_map.source_roots:
-            if src_root != test_root:
-                relations.append(f"{test_root} validates {src_root}")
-    return sorted(dict.fromkeys(relations))[:8]
 
 
 def scan_repo(repo: Path) -> tuple[RepoMap, ValidationConfig, ProjectRules]:
     discovery = _iter_repo_paths(repo)
-    manifests = sorted([p for p in discovery.files if Path(p).name in MANIFEST_FILES])
+    manifests = sorted([p for p in discovery.files if Path(p).name in MANIFEST_FILES and not Path(p).name.endswith("lock")])
+    lockfiles = sorted([p for p in discovery.files if Path(p).name in {"poetry.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"}])
     config_files = sorted([p for p in discovery.files if Path(p).name in CONFIG_HINT_FILES])
-    languages = _infer_languages(discovery, [Path(m).name for m in manifests])
+    docs_roots = sorted({"docs" for f in discovery.files if f.startswith("docs/") or f == "docs"})
+    if any(Path(f).name.lower() in {"readme.md", "readme.rst"} for f in discovery.files):
+        docs_roots = sorted(set(docs_roots) | {"."})
 
-    source_roots = _infer_roots(discovery.directories, lambda p: p.endswith("src") or p.startswith("src/") or any((repo / p).glob("*.py")) and not p.startswith("tests"))
-    if not source_roots:
-        source_roots = sorted({Path(f).parts[0] for f in discovery.files if "/" in f and not f.startswith("tests/")})[:8]
-
-    test_roots = _infer_roots(discovery.directories, lambda p: p == "tests" or p.startswith("tests/") or p.endswith("__tests__"))
-    docs_roots = _infer_roots(discovery.directories, lambda p: p == "docs" or p.startswith("docs/"))
-    package_roots = sorted({root for root in source_roots if (repo / root / "__init__.py").exists() or (repo / root).name == "src"})[:8]
-    entrypoints = sorted([p for p in ENTRYPOINT_HINTS if (repo / p).exists()])
+    source_roots = _source_roots(repo, discovery)
+    test_roots = _test_roots(discovery)
+    package_roots = sorted({r for r in source_roots if (repo / r / "__init__.py").exists() or (repo / r).is_dir()})[:12]
 
     repo_map = RepoMap(
-        languages=languages,
-        frameworks=_infer_frameworks(discovery.files, manifests + config_files),
+        languages=_infer_languages(discovery, manifests + lockfiles),
+        frameworks=_infer_frameworks(discovery.files, manifests + lockfiles, config_files),
+        package_managers=_package_managers(manifests, lockfiles),
         package_roots=package_roots,
         source_roots=source_roots,
         test_roots=test_roots,
         docs_roots=docs_roots,
         manifests=manifests,
+        lockfiles=lockfiles,
         config_files=config_files,
-        likely_entrypoints=entrypoints,
-        validation_toolchain_hints=[],
-        repo_shape=_shape_from_roots(source_roots),
-        module_relationships=[],
+        major_configs=sorted((config_files + manifests + lockfiles)[:16]),
+        likely_entrypoints=sorted([p for p in ENTRYPOINT_HINTS if (repo / p).exists()]),
+        build_system_hints=sorted([n for n in ["make" if (repo / "Makefile").exists() else "", "just" if (repo / "justfile").exists() else ""] if n]),
+        ci_hints=sorted([f for f in discovery.files if f.startswith(".github/workflows/")][:8]),
+        generated_code_hints=sorted([d for d in discovery.directories if "generated" in d or d.endswith("/gen")][:8]),
+        package_test_relationships=_package_test_relationships(source_roots, test_roots),
+        source_test_patterns=_source_test_patterns(source_roots, test_roots),
+        repo_shape=_repo_shape(source_roots, manifests + lockfiles),
         summary={
             "file_count": len(discovery.files),
             "directory_count": len(discovery.directories),
-            "top_level_entries": sorted({Path(p).parts[0] for p in discovery.files if p})[:16],
+            "top_level_entries": sorted({Path(p).parts[0] for p in discovery.files})[:16],
         },
     )
-    repo_map.module_relationships = _module_relationships(repo_map)
     repo_map.validation_toolchain_hints = sorted({s.name for s in _build_validation_steps(repo_map)})
 
     validation = ValidationConfig(_build_validation_steps(repo_map))
-    rules: list[str] = []
-    if "python" in repo_map.languages:
-        rules.append("Use ruff/mypy/pytest steps from .villani/validation.json before finalizing edits.")
-    if repo_map.test_roots:
-        rules.append(f"Prefer targeted tests in {repo_map.test_roots[0]} before broad suites.")
-    if repo_map.source_roots and any(root == "src" or root.startswith("src/") for root in repo_map.source_roots):
-        rules.append("Project uses src-style layout; keep imports and tests aligned with src/ modules.")
-    if repo_map.repo_shape == "multi_root":
-        rules.append("Repository is multi-root; keep changes scoped to a single root when possible.")
-    rules.append("Keep .villani memory files compact and deterministic.")
-
+    rules = [
+        f"Primary source roots: {', '.join(repo_map.source_roots[:4]) or 'none detected'}.",
+        f"Primary test roots: {', '.join(repo_map.test_roots[:4]) or 'none detected'}.",
+        "Run validation steps from .villani/validation.json in cost order with targeted-first testing.",
+        "Escalate to broader validation when manifests/configs/dependencies change.",
+        "Keep .villani memory compact and deterministic.",
+    ]
     return repo_map, validation, ProjectRules(rules=rules[:8])
 
 
@@ -340,20 +381,10 @@ def init_project_memory(repo: Path) -> dict[str, Path]:
 
 def ensure_project_memory(repo: Path) -> dict[str, Path]:
     root = repo / VILLANI_DIR
-    required = [
-        root / "project_rules.md",
-        root / "validation.json",
-        root / "repo_map.json",
-        root / "session_state.json",
-    ]
+    required = [root / "project_rules.md", root / "validation.json", root / "repo_map.json", root / "session_state.json"]
     if any(not p.exists() for p in required):
         return init_project_memory(repo)
-    return {
-        "project_rules": required[0],
-        "validation": required[1],
-        "repo_map": required[2],
-        "session_state": required[3],
-    }
+    return {"project_rules": required[0], "validation": required[1], "repo_map": required[2], "session_state": required[3]}
 
 
 def load_repo_map(repo: Path) -> dict[str, Any]:
