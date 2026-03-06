@@ -513,11 +513,10 @@ class TakeoverPlanner:
             and not is_ignored_repo_path(p.relative_to(self.repo).as_posix())
         ]
         py = sum(1 for p in files if p.suffix == ".py")
-        tests = sum(1 for p in files if "tests" in p.parts)
+        rel_files = [p.relative_to(self.repo).as_posix() for p in files]
+        tests = sum(1 for rel in rel_files if self._is_meaningful_test_file(rel))
         md = sum(1 for p in files if p.suffix == ".md")
-        has_tests = self._has_meaningful_tests(
-            [p.relative_to(self.repo).as_posix() for p in files]
-        )
+        has_tests = self._has_meaningful_tests(rel_files)
         return f"files={len(files)} py={py} tests={tests} docs={md} has_tests={int(has_tests)}"
 
     def discover_opportunities(self) -> list[Opportunity]:
@@ -655,14 +654,15 @@ class TakeoverPlanner:
             and not Path(rel).name.startswith("test_")
         ]
 
+    def _is_meaningful_test_file(self, rel: str) -> bool:
+        path = Path(rel)
+        name = path.name
+        if not name.endswith(".py"):
+            return False
+        return rel.startswith("tests/") or name.startswith("test_")
+
     def _has_meaningful_tests(self, files: list[str]) -> bool:
-        if any(rel.startswith("tests/") for rel in files):
-            return True
-        for rel in files:
-            name = Path(rel).name
-            if name.startswith("test_") and name.endswith(".py"):
-                return True
-        return False
+        return any(self._is_meaningful_test_file(rel) for rel in files)
 
     def _tracked_runtime_artifacts(self) -> list[str]:
         try:

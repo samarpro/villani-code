@@ -8,6 +8,8 @@ from typing import Literal, Optional
 import typer
 from rich.console import Console
 
+from villani_code.interrupts import InterruptController
+
 from villani_code.tui.components.settings import SettingsManager
 from villani_code.anthropic_client import AnthropicClient
 from villani_code.interactive import InteractiveShell
@@ -48,7 +50,18 @@ def _build_runner(base_url: str, model: str, repo: Path, max_tokens: int, stream
 
 def _run_interactive(base_url: str, model: str, repo: Path, max_tokens: int, small_model: bool, provider: Literal["anthropic", "openai"], api_key: Optional[str], villani_mode: bool = False, villani_objective: str | None = None) -> None:
     runner = _build_runner(base_url, model, repo, max_tokens, True, None, False, False, None, False, False, False, False, small_model, provider, api_key, villani_mode=villani_mode, villani_objective=villani_objective)
-    InteractiveShell(runner, repo.resolve(), villani_mode=villani_mode, villani_objective=villani_objective).run()
+    shell = InteractiveShell(runner, repo.resolve(), villani_mode=villani_mode, villani_objective=villani_objective)
+    interrupts = InterruptController()
+    while True:
+        try:
+            shell.run()
+            interrupts.reset_interrupt_state()
+            return
+        except KeyboardInterrupt:
+            action = interrupts.register_interrupt()
+            if action == "exit":
+                raise typer.Exit(code=130)
+            console.print("Interrupted current session. Press Ctrl+C again to exit Villani Code.")
 
 
 @app.callback(invoke_without_command=True)
@@ -107,7 +120,7 @@ def interactive(
     provider: Literal["anthropic", "openai"] = typer.Option("anthropic", "--provider"),
     api_key: Optional[str] = typer.Option(None, "--api-key"),
     villani_mode: bool | None = typer.Option(None, "--villani-mode/--no-villani-mode"),
-    takeover: bool = typer.Option(False, "--takeover"),
+    takeover: bool = typer.Option(False, "--takeover", hidden=True),
     objective: Optional[str] = typer.Argument(None),
 ):
     resolved_villani = takeover or _resolve_villani_flag(repo, villani_mode)
@@ -128,9 +141,9 @@ def villani_mode_cmd(
     _run_interactive(base_url, model, repo, max_tokens, small_model, provider, api_key, villani_mode=True, villani_objective=objective)
 
 
-@app.command("takeover")
+@app.command("takeover", hidden=True)
 def takeover_cmd(
-    objective: Optional[str] = typer.Argument(None, help="Optional takeover objective"),
+    objective: Optional[str] = typer.Argument(None, help="Optional Villani mode objective"),
     base_url: str = typer.Option(..., "--base-url"),
     model: str = typer.Option(..., "--model"),
     repo: Path = typer.Option(Path("."), "--repo"),

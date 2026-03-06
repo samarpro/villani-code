@@ -98,8 +98,13 @@ def meets_validation_minimum(task: Any) -> bool:
 
 def has_real_validation_artifact(task: Any) -> bool:
     for artifact in task.validation_artifacts:
-        text = str(artifact).lower()
-        if "python -c" in text or "python <<" in text or "exit=0" in text or "exit 0" in text:
+        text = str(artifact).strip()
+        if not text:
+            continue
+        if "(exit=0)" not in text.lower():
+            continue
+        command = text.rsplit("(exit=", 1)[0].strip()
+        if command:
             return True
     return False
 
