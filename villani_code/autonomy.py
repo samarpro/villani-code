@@ -357,7 +357,7 @@ class FailureClassifier:
         elif "no progress" in text or "blocked" in text:
             category = FailureCategory.REPEATED_NO_PROGRESS
             strategy = (
-                "Switch strategy: decompose objective and execute one bounded step."
+                "Switch strategy: decompose objective and execute the next highest-leverage step."
             )
         elif "verify" in text or "verification" in text:
             category = FailureCategory.VERIFICATION_FAILURE
@@ -375,7 +375,7 @@ class FailureClassifier:
         self._counts[category] = count
         if count >= 3 and category != FailureCategory.REPEATED_NO_PROGRESS:
             category = FailureCategory.REPEATED_NO_PROGRESS
-            strategy = "Repeated failure pattern detected; change approach and reduce blast radius."
+            strategy = "Repeated failure pattern detected; change approach and prioritize a different intervention."
 
         return FailureEvent(
             category=category,
@@ -402,11 +402,12 @@ class Opportunity:
 
 @dataclass(slots=True)
 class TakeoverConfig:
-    max_files_per_wave: int = 4
-    max_commands_per_wave: int = 3
-    max_waves: int = 4
-    max_total_task_attempts: int = 8
+    max_files_per_wave: int = 0
+    max_commands_per_wave: int = 0
+    max_waves: int = 0
+    max_total_task_attempts: int = 0
     min_confidence: float = 0.55
+    stagnation_cycle_limit: int = 3
 
 
 @dataclass(slots=True)
@@ -427,7 +428,7 @@ class TakeoverPlanner:
         "Triage TODO/FIXME cluster": 3,
         "Audit missing usage docs": 4,
         "Audit docs drift": 5,
-        "Inspect repo for highest-leverage small improvement": 6,
+        "Inspect repo for highest-leverage improvement": 6,
     }
 
     def __init__(self, repo: Path, *, enable_fallback: bool = True):
@@ -615,14 +616,14 @@ class TakeoverPlanner:
         if not ops and self.enable_fallback:
             ops.append(
                 Opportunity(
-                    "Inspect repo for highest-leverage small improvement",
+                    "Inspect repo for highest-leverage improvement",
                     "fallback",
                     0.5,
                     0.55,
                     [],
-                    "no stronger heuristic fired, but repo still deserves bounded inspection",
+                    "no stronger heuristic fired, but repo still deserves inspection",
                     "small",
-                    "read README, inspect key package/config files, and identify one safe bounded improvement",
+                    "read README, inspect key package/config files, and identify the highest-leverage improvement",
                     TaskContract.INSPECTION.value,
                 )
             )

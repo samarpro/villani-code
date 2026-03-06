@@ -67,11 +67,11 @@ def test_inspection_task_can_pass_with_concrete_inspection_summary(
 ) -> None:
     controller = VillaniModeController(StaticRunner(), tmp_path)
     task = _task(
-        "Inspect repo for highest-leverage small improvement",
+        "Inspect repo for highest-leverage improvement",
         TaskContract.INSPECTION.value,
     )
     task.inspection_summary = (
-        "Checked README and package layout; no bounded safe fix needed."
+        "Checked README and package layout; no safe fix needed."
     )
     task.produced_inspection_conclusion = True
     verification = controller.verifier.verify(

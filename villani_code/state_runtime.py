@@ -410,15 +410,9 @@ def ensure_project_memory_and_plan(runner: Any, instruction: str) -> None:
         return
 
     if runner.villani_mode:
-        if plan.risk_level in {PlanRiskLevel.LOW, PlanRiskLevel.MEDIUM}:
-            runner.event_callback({"type": "plan_auto_approved", "risk": plan.risk_level.value})
-            update_session_state(runner.repo, session)
-            return
-        runner.event_callback({"type": "plan_aborted", "reason": "high risk in autonomous mode"})
-        session.outcome_status = "aborted"
-        session.next_step_hints = ["Run interactively and approve explicitly for high-risk task"]
+        runner.event_callback({"type": "plan_auto_approved", "risk": plan.risk_level.value})
         update_session_state(runner.repo, session)
-        raise RuntimeError("High-risk plan in autonomous mode requires explicit confirmation; aborting safely.")
+        return
 
     runner.event_callback({"type": "plan_approval_required", "risk": plan.risk_level.value})
     approved = runner.approval_callback("ExecutionPlan", {"summary": plan.to_human_text(), "risk": plan.risk_level.value})

@@ -187,7 +187,7 @@ def test_summary_generation_includes_verification(tmp_path: Path) -> None:
     assert "verification" in summary_text
 
 
-def test_villani_mode_uses_bounded_runner(tmp_path: Path) -> None:
+def test_villani_mode_uses_unbounded_runner_budget(tmp_path: Path) -> None:
     runner = StubRunner(tmp_path)
     controller = VillaniModeController(runner, tmp_path)
 
@@ -196,7 +196,7 @@ def test_villani_mode_uses_bounded_runner(tmp_path: Path) -> None:
     )
     controller._execute_task(task)
 
-    assert runner.last_budget is not None
+    assert runner.last_budget is None
 
 
 def test_villani_mode_startup_without_prompt(tmp_path: Path) -> None:
