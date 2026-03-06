@@ -32,7 +32,7 @@ from villani_code.repo_map import build_repo_map
 from villani_code.retrieval import Retriever
 from villani_code.skills import discover_skills
 from villani_code.streaming import StreamCoalescer, assemble_anthropic_stream
-from villani_code.tools import execute_tool, tool_specs
+from villani_code.tools import tool_specs
 from villani_code.repo_rules import classify_repo_path, is_ignored_repo_path
 from villani_code.transcripts import save_transcript
 from villani_code.utils import (
@@ -631,87 +631,15 @@ class Runner:
         tool_use_id: str,
         message_count: int,
     ) -> dict[str, Any]:
-        hook_pre = self.hooks.run_event(
-            "PreToolUse",
-            {"event": "PreToolUse", "tool": tool_name, "input": tool_input},
-        )
-        if not hook_pre.allow:
-            return {"content": f"Blocked by hook: {hook_pre.reason}", "is_error": True}
+        from villani_code import state_tooling
 
-        if self.small_model:
-            policy_error = self._small_model_tool_guard(tool_name, tool_input)
-            if policy_error:
-                return {"content": policy_error, "is_error": True}
-            self._tighten_tool_input(tool_name, tool_input)
-
-        policy = self.permissions.evaluate_with_reason(
+        return state_tooling.execute_tool_with_policy(
+            self,
             tool_name,
             tool_input,
-            bypass=self.bypass_permissions,
-            auto_accept_edits=self.auto_accept_edits,
+            tool_use_id,
+            message_count,
         )
-        self._emit_policy_event(tool_name, tool_input, policy.decision, policy.reason)
-        if policy.decision == Decision.DENY:
-            return {"content": "Denied by permission policy", "is_error": True}
-        if policy.decision == Decision.ASK:
-            if self.villani_mode:
-                self.event_callback(
-                    {
-                        "type": "approval_auto_resolved",
-                        "name": tool_name,
-                        "input": tool_input,
-                    }
-                )
-            else:
-                self.event_callback(
-                    {
-                        "type": "approval_required",
-                        "name": tool_name,
-                        "input": tool_input,
-                    }
-                )
-                if not self.approval_callback(tool_name, tool_input):
-                    return {"content": "User denied tool execution", "is_error": True}
-        elif self.plan_mode != "off" and tool_name in {"Write", "Patch"}:
-            return {"content": "Plan mode: edit not executed", "is_error": False}
-
-        if self.villani_mode and tool_name in {"Write", "Patch"}:
-            target = str(tool_input.get("file_path", ""))
-            if target:
-                classification = classify_repo_path(target)
-                if is_ignored_repo_path(target) or classification in {
-                    "runtime_artifact",
-                    "editor_artifact",
-                    "vcs_internal",
-                }:
-                    msg = f"Skipped low-authority path: {target} ({classification})"
-                    self.event_callback({"type": "autonomous_phase", "phase": msg})
-                    return {"content": msg, "is_error": True}
-
-        if tool_name in {"Write", "Patch"}:
-            target = str(tool_input.get("file_path", ""))
-            if target:
-                normalized_target = target.replace("\\", "/").lstrip("./")
-                self._intended_targets.add(normalized_target)
-                self._current_verification_targets = {normalized_target}
-                self._current_verification_before_contents = {}
-                target_path = (self.repo / normalized_target).resolve()
-                if target_path.exists() and target_path.is_file():
-                    before_text = target_path.read_text(encoding="utf-8", errors="replace")
-                    self._before_contents[normalized_target] = before_text
-                    self._current_verification_before_contents[normalized_target] = before_text
-            self.checkpoints.create(
-                [Path(tool_input.get("file_path", ""))], message_index=message_count
-            )
-        self.event_callback(
-            {
-                "type": "tool_started",
-                "name": tool_name,
-                "input": tool_input,
-                "tool_use_id": tool_use_id,
-            }
-        )
-        return execute_tool(tool_name, tool_input, self.repo, unsafe=self.unsafe)
 
 
     def _prepare_messages_for_model(

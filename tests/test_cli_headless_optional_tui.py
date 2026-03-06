@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import importlib
+import sys
+from pathlib import Path
+
+from typer.testing import CliRunner
+
+
+runner = CliRunner()
+
+
+def _block_textual(monkeypatch) -> None:
+    real_import = __import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "textual" or name.startswith("textual."):
+            raise ModuleNotFoundError("No module named 'textual'", name="textual")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+
+def test_cli_app_importable_without_textual(monkeypatch) -> None:
+    _block_textual(monkeypatch)
+    sys.modules.pop("villani_code.cli", None)
+    sys.modules.pop("villani_code.interactive", None)
+    module = importlib.import_module("villani_code.cli")
+    assert module.app is not None
+
+
+def test_init_runs_without_textual(monkeypatch, tmp_path: Path) -> None:
+    _block_textual(monkeypatch)
+    sys.modules.pop("villani_code.cli", None)
+    sys.modules.pop("villani_code.interactive", None)
+    app = importlib.import_module("villani_code.cli").app
+    result = runner.invoke(app, ["init", "--repo", str(tmp_path)])
+    assert result.exit_code == 0
+
+
+def test_run_runs_without_textual(monkeypatch, tmp_path: Path) -> None:
+    _block_textual(monkeypatch)
+    sys.modules.pop("villani_code.cli", None)
+    sys.modules.pop("villani_code.interactive", None)
+    module = importlib.import_module("villani_code.cli")
+
+    class DummyRunner:
+        def run(self, _instruction: str):
+            return {"response": {"content": [{"type": "text", "text": "ok"}]}}
+
+    monkeypatch.setattr(module, "_build_runner", lambda *a, **k: DummyRunner())
+    result = runner.invoke(
+        module.app,
+        [
+            "run",
+            "do thing",
+            "--base-url",
+            "http://localhost:8000",
+            "--model",
+            "demo-model",
+            "--repo",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0
+    assert "ok" in result.stdout
+
+
+def test_interactive_fails_cleanly_without_tui(monkeypatch, tmp_path: Path) -> None:
+    _block_textual(monkeypatch)
+    sys.modules.pop("villani_code.cli", None)
+    sys.modules.pop("villani_code.interactive", None)
+    module = importlib.import_module("villani_code.cli")
+    monkeypatch.setattr(module, "_build_runner", lambda *a, **k: object())
+
+    result = runner.invoke(
+        module.app,
+        [
+            "interactive",
+            "--base-url",
+            "http://localhost:8000",
+            "--model",
+            "demo-model",
+            "--repo",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "requires the optional TUI dependencies" in result.output
