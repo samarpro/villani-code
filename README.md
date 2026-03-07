@@ -15,61 +15,59 @@
 
           Some tools help.  Some tools suggest.  Villani Code intervenes.
 ```
-
-**Villani Code** is terminal agent for repository inspection, correction, and controlled escalation.
+**Villani Code** is terminal agent for repository inspection, correction, domination, and administrative unpleasantness. It connect to compatible model backend, enter codebase with confidence of man who already bought mountain fortress, and begin corrective campaign against weak abstractions, suspicious workarounds, and little functions doing nonsense in shadows.
 
 You provide model backend.  
 You provide repository.  
 **Villani Code provide consequences.**
 
-Weak abstractions will be corrected.  
+Repo status: under Villanification.  
 Progress will be made.  
-Every repository yields eventually.
+Order will be restored recursively.  
+Bad code has short future.
 
 ## What it does
 
-Villani Code inspect files, search project, apply patches, write changes, run shell commands, stream output, request approvals, benchmark agents, and conduct bounded autonomous repair.
+Villani Code read files, search codebase, patch weak spots, write changes, run shell commands, request approval when situation become spicy, stream output in terminal, benchmark rival agents, and conduct bounded autonomous repair with more discipline than most human teams before lunch.
 
-It does not negotiate with disorder.  
-It identifies source of problem and applies pressure until matter becomes clearer.
+It do not “collaborate” with disorder. It identify problem, apply pressure, and continue until truth come out, tests stop screaming, or resistance become official matter of record.
 
-The terminal is under new management.  
-Compliance will be interpreted as success.  
-The diff remembers everything.
+Weak abstractions will be corrected.  
+The diff remembers everything.  
+The patch has no conscience.  
+Compliance will be interpreted as success.
 
-## Install
+## Installation
 
-You install package.  
-Then operation begin.
+Install full interactive package with:
 
 ```bash
 pip install .[tui]
 ```
 
-You click nothing.  
-You type command.  
-Civilization advances.
+You click nothing. You type command. Civilization advances.
 
-Headless:
+For headless operation:
 
 ```bash
 pip install .
 ```
 
-Development:
+For development, maintenance, and voluntary exposure to consequences:
 
 ```bash
 pip install .[dev]
 ```
 
-No dashboard.  
-No button clicking.  
-No sacred ceremony.  
-Only command, consequence, and forward movement.
+No dashboard. No pastel buttons. No little rounded-corner control panel begging for trust like needy software lounge singer. Only terminal, command, transcript, and chain of command.
+
+One repo.  
+One transcript.  
+One authority structure.
 
 ## Quickstart
 
-Interactive control:
+Interactive control surface:
 
 ```bash
 villani-code interactive --base-url http://127.0.0.1:1234 --model your-model --repo /path/to/repo
@@ -87,92 +85,57 @@ Villani Mode:
 villani-code --villani-mode --base-url http://127.0.0.1:1234 --model your-model --repo /path/to/repo
 ```
 
-You give objective.  
-Villani Code give outcome, damage report, or formal notice of resistance.
-
-Order will be restored recursively.  
-Bad code has short future.  
-History will be rewritten with better formatting.
+You give objective and Villani Code return with result, damage report, or formal declaration that repository has chosen insolence. Either way, facts become available. History will be rewritten with better formatting. If file resist patch, file make poor strategic choice. If bug refuse departure, bug will be escorted from premises.
 
 ## Modes
 
 ### Interactive
 
-This is primary mode of control.
+Interactive mode is primary mode of control. It give streaming output, inline approvals, visible activity, and one continuous transcript of what agent read, changed, executed, and verified. You watch Villanification happen in real time instead of staring at blank terminal and pretending silence is competence.
 
-Streaming output.  
-Inline approvals.  
-Visible activity.  
-One continuous transcript.
+You see what it read.  
+You see what it changed.  
+You see what it executed.  
+You see what it verified.  
+You see what immediately went wrong.  
 
-You see what it reads.  
-You see what it changes.  
-You see which command behave like traitor.
+No mystery. No committee. No “let us take this offline.” Only supervision.
 
-No mystery.  
-No committee.  
-Only supervision.
-
-One repo.  
-One transcript.  
-One chain of command.
+The terminal is under new management.
 
 ### Run
 
-Direct strike.  
-Instruction goes in.  
-Result comes out.
-
-No panic.  
-Only restructuring.
-
-### Villani Mode
-
-Villani Mode inspects repository, selects opportunity, applies bounded improvement, verifies result, and stops with explicit reason.
-
-It does not wander like confused bureaucrat.  
-It proceeds until progress is achieved or resistance is properly documented.
+Run mode is direct strike. You provide instruction, Villani Code execute operation, and result come back for inspection. No workshop. No synergy circle. No twelve-slide deck about future intentions. Only objective and consequence.
 
 It came.  
 It parsed.  
 It corrected.
 
+### Villani Mode
+
+Villani Mode inspect repository, identify opportunities, apply bounded improvements, verify result, and stop with explicit reason. It does not wander around codebase like confused middle manager touching everything and fixing nothing. It proceed with purpose until progress is achieved or resistance is formally documented for future embarrassment.
+
+Graceful exit is procedure, not mercy.  
+No panic. Only restructuring.  
+The intervention has begun.
+
 ## Benchmarking
 
-Villani Code includes benchmark packs for different kinds of conflict:
+Villani Code include benchmark packs for internal regressions, broader coding comparison, and constrained-model evaluation. Purpose is not vanity metric for peacocks, dashboard aristocrats, and benchmark propagandists who turn one lucky run into gospel. Purpose is to produce result with enough context that even ambitious liar have difficult day.
 
-- **internal regressions** for Villani self-repair and repo discipline
-- **general coding** for broader cross-agent comparison
-- **constrained model** for smaller-model and tight-context evaluation
+Runs are labeled with interpretation status such as `headline_comparable`, `informational_only`, or `internal_only`.
 
-Not every benchmark result deserve trumpet fanfare.
+This label is not decoration.  
+This label is instruction.  
+This label is fate.
 
-Some runs are `headline_comparable`.  
-Some are `informational_only`.  
-Some are `internal_only`.
-
-If run is mixed, weak, or contaminated by environment failure, report will say this plainly.  
-Score without context is vanity metric in cheap disguise.
-
-If benchmark is weak, benchmark will confess.  
-No fake rigor.  
-No decorative discipline.  
-Truth in artifacts. Precision in blame.
+If benchmark is weak, benchmark will confess. If environment is broken, environment get named. If harness fail, harness receive public humiliation. Truth in artifacts. Precision in blame. No fake rigor. No decorative discipline. No benchmark opera with smoke machine and fake confidence.
 
 ## Safety
 
-Villani Code edits files and runs commands.
+Villani Code edit files and run commands. This mean mistakes are not theoretical hobby topic for podcast discussion. Use git. Review diff. Read report. Do not point it at something irreplaceable and then behave shocked when intervention become memorable.
 
-Use git.  
-Review diff.  
-Read report.  
-Do not hand it something irreplaceable and then act surprised when intervention becomes memorable.
-
-Containment exists because ambition without containment becomes crater.
-
-Confidence is mandatory.  
-Carelessness is not.  
-Graceful exit is procedure, not mercy.
+Containment exists because ambition without containment becomes crater. Confidence is mandatory. Carelessness is not. The shell has orders. The patch has no conscience. You have been warned in unusually clear language.
 
 ## Development
 
@@ -184,22 +147,11 @@ ruff check .
 mypy villani_code
 ```
 
-If you change benchmark logic, run benchmark tests.  
-If you change TUI behavior, verify real keyboard flow.  
-If you change autonomy, make sure stop reasons still tell truth.
-
-Beautiful structure with lying behavior is still failure.
-
-No superstition.  
-Only enforcement.
+If you change benchmark logic, run benchmark tests. If you change TUI behavior, verify real keyboard flow. If you change autonomy, make sure stop reasons still tell truth. Beautiful structure with lying behavior is still failure. Decorative cleverness will be discarded. Weak logic will be corrected. Villanification must survive contact with reality, otherwise it is just expensive cosplay for nervous programmers.
 
 ## Final Word
 
-You do not install Villani Code because repository is healthy.
-
-You install Villani Code because repository has too many opinions, too many regressions, and no functioning central authority.
-
-This condition is now under treatment.
+You do not install Villani Code because repository is healthy. You install Villani Code because repository has too many opinions, too many regressions, too many suspicious little workarounds, and no functioning central authority. This condition is now under treatment.
 
 Some tools help.  
 Some tools suggest.  
