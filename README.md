@@ -15,7 +15,7 @@
 
           Some tools help.  Some tools suggest.  Villani Code intervenes.
 ```
-**Villani Code** is terminal agent for repository inspection, correction, domination, and administrative unpleasantness. It connect to compatible model backend, enter codebase with confidence of man who already bought mountain fortress, and begin corrective campaign against weak abstractions, suspicious workarounds, and little functions doing nonsense in shadows.
+**Villani Code** is terminal agent optimize for small local model, repository inspection, correction, domination, and administrative unpleasant. It connect to compatible model backend, enter codebase with confidence of man who already bought mountain fortress, and begin corrective campaign against weak abstraction, suspicious workaround, and little functions doing nonsense in shadows.
 
 You provide model backend.  
 You provide repository.  
@@ -85,13 +85,13 @@ Villani Mode:
 villani-code --villani-mode --base-url http://127.0.0.1:1234 --model your-model --repo /path/to/repo
 ```
 
-You give objective and Villani Code return with result, damage report, or formal declaration that repository has chosen insolence. Either way, facts become available. History will be rewritten with better formatting. If file resist patch, file make poor strategic choice. If bug refuse departure, bug will be escorted from premises.
+You give objective and Villani Code return with result, damage report, or formal declaration that repository has chosen insolence. Either way, facts become available. History will be rewritten with better formatting. If file resist patch, file make poor strategic choice. If bug refuse departure, bug will be escorted from premise.
 
 ## Modes
 
 ### Interactive
 
-Interactive mode is primary mode of control. It give streaming output, inline approvals, visible activity, and one continuous transcript of what agent read, changed, executed, and verified. You watch Villanification happen in real time instead of staring at blank terminal and pretending silence is competence.
+Interactive mode is primary mode of control. It give streaming output, inline approvals, visible activity, and one continuous transcript of what agent read, changed, executed, and verified. You watch Villanification happen in real time instead of staring at blank terminal and pretend silence is competence.
 
 You see what it read.  
 You see what it changed.  
@@ -129,7 +129,7 @@ This label is not decoration.
 This label is instruction.  
 This label is fate.
 
-If benchmark is weak, benchmark will confess. If environment is broken, environment get named. If harness fail, harness receive public humiliation. Truth in artifacts. Precision in blame. No fake rigor. No decorative discipline. No benchmark opera with smoke machine and fake confidence.
+If benchmark is weak, benchmark will confess. If environment is broken, environment get named. If harness fail, harness receive public humiliation. Truth in artifacts. Precision in blame. No decorative discipline. No benchmark opera with smoke machine and fake confidence.
 
 ## Safety
 
