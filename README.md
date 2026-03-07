@@ -28,6 +28,8 @@ Bad code has short future.
 
 ## What it does
 
+![Villani mode engaged](https://github.com/user-attachments/assets/d15eaee6-e336-4931-9e91-64102d459c36)
+
 Villani Code read files, search codebase, patch weak spots, write changes, run shell commands, request approval when situation become spicy, stream output in terminal, benchmark rival agents, and conduct bounded autonomous repair with more discipline than most human teams before lunch.
 
 It do not “collaborate” with disorder. It identify problem, apply pressure, and continue until truth come out, tests stop screaming, or resistance become official matter of record.
