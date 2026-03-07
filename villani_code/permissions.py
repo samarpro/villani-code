@@ -115,7 +115,7 @@ class BashClassification:
 
 _DISALLOWED_SHELL_TOKENS = {"&&", "||", ";", "|", "(", ")"}
 _REDIRECTION_PREFIXES = (">", "<", "2>", "1>")
-_SAFE_EXACT = {
+_SAFE_READONLY_PREFIXES = {
     ("pwd",),
     ("ls",),
     ("dir",),
@@ -124,17 +124,37 @@ _SAFE_EXACT = {
     ("rg",),
     ("grep",),
     ("find",),
+}
+_SAFE_TEST_PREFIXES = {
     ("pytest",),
-    ("npm", "test"),
-    ("pnpm", "test"),
+    ("python", "-m", "pytest"),
     ("uv", "run", "pytest"),
     ("poetry", "run", "pytest"),
+    ("npm", "test"),
+    ("pnpm", "test"),
+}
+_SAFE_LINT_PREFIXES = {
+    ("ruff", "check"),
+    ("ruff", "format", "--check"),
+    ("mypy",),
+}
+_SAFE_VERSION_PREFIXES = {
     ("python", "--version"),
+    ("python", "-v"),
+    ("python", "-V"),
     ("node", "--version"),
+    ("node", "-v"),
+}
+_SAFE_GIT_READONLY_PREFIXES = {
     ("git", "status"),
     ("git", "diff"),
     ("git", "log"),
     ("git", "show"),
+    ("git", "branch"),
+}
+_NETWORK_FETCH_PREFIXES = {
+    ("curl",),
+    ("wget",),
 }
 
 
@@ -171,9 +191,20 @@ def classify_bash_command(command: str) -> BashClassification:
         if lowered[: len(pfx)] == pfx:
             return BashClassification(Decision.ASK, "Install command requires explicit approval")
 
-    for exact in _SAFE_EXACT:
-        if lowered[: len(exact)] == exact:
-            return BashClassification(Decision.ALLOW, f"BashSafe allowlist matched: {' '.join(exact)}")
+    if any(lowered[: len(prefix)] == prefix for prefix in _NETWORK_FETCH_PREFIXES):
+        return BashClassification(Decision.ASK, "Network fetch command requires explicit approval")
+
+    safe_groups = [
+        (_SAFE_READONLY_PREFIXES, "read-only inspection command"),
+        (_SAFE_TEST_PREFIXES, "test command"),
+        (_SAFE_LINT_PREFIXES, "lint/type/format check command"),
+        (_SAFE_VERSION_PREFIXES, "version/info command"),
+        (_SAFE_GIT_READONLY_PREFIXES, "git read-only command"),
+    ]
+    for prefixes, label in safe_groups:
+        for prefix in prefixes:
+            if lowered[: len(prefix)] == prefix:
+                return BashClassification(Decision.ALLOW, f"BashSafe allowlist matched {label}: {' '.join(prefix)}")
 
     return BashClassification(Decision.ASK, "Not in BashSafe allowlist")
 

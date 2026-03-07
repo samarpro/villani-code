@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import traceback
 import uuid
+import shlex
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -25,7 +26,7 @@ class RunnerController:
         self.runner = runner
         self.app = app
         self._approval_waiters: dict[str, ApprovalWaiter] = {}
-        self._allowlist: set[tuple[str, str]] = set()
+        self._approval_scopes: set[str] = set()
         self._assistant_stream_saw_text = False
 
         self.runner.print_stream = False
@@ -77,12 +78,65 @@ class RunnerController:
             return str(permissions.target_for(tool_name, payload))
         return "<unknown>"
 
+    def _approval_scope_for(self, tool_name: str, payload: dict[str, Any]) -> str:
+        if tool_name in {"Read", "Write", "Patch", "Edit"}:
+            return f"{tool_name}:any"
+        if tool_name != "Bash":
+            return f"{tool_name}:exact:{self._target_for(tool_name, payload)}"
+
+        command = str(payload.get("command", ""))
+        normalized = " ".join(command.split())
+        try:
+            tokens = [t.lower() for t in shlex.split(command, posix=True)]
+        except ValueError:
+            return f"Bash:exact:{normalized}"
+        if not tokens:
+            return "Bash:exact:"
+
+        safe_prefixes = {
+            ("pwd",),
+            ("ls",),
+            ("dir",),
+            ("cat",),
+            ("type",),
+            ("rg",),
+            ("grep",),
+            ("find",),
+            ("head",),
+            ("tail",),
+            ("wc",),
+        }
+        test_prefixes = {
+            ("pytest",),
+            ("python", "-m", "pytest"),
+            ("uv", "run", "pytest"),
+            ("poetry", "run", "pytest"),
+            ("npm", "test"),
+            ("pnpm", "test"),
+        }
+        git_readonly_prefixes = {
+            ("git", "status"),
+            ("git", "diff"),
+            ("git", "log"),
+            ("git", "show"),
+            ("git", "branch"),
+        }
+
+        lowered = tuple(tokens)
+        if any(lowered[: len(prefix)] == prefix for prefix in safe_prefixes):
+            return "Bash:safe"
+        if any(lowered[: len(prefix)] == prefix for prefix in test_prefixes):
+            return "Bash:test"
+        if any(lowered[: len(prefix)] == prefix for prefix in git_readonly_prefixes):
+            return "Bash:git_readonly"
+        return f"Bash:exact:{normalized}"
+
     def request_approval(self, tool_name: str, payload: dict[str, Any]) -> bool:
-        target = self._target_for(tool_name, payload)
-        key = (tool_name, target)
-        if key in self._allowlist:
+        scope = self._approval_scope_for(tool_name, payload)
+        if scope in self._approval_scopes:
             return True
 
+        target = self._target_for(tool_name, payload)
         request_id = str(uuid.uuid4())
         waiter = ApprovalWaiter(event=threading.Event())
         self._approval_waiters[request_id] = waiter
@@ -92,7 +146,7 @@ class RunnerController:
         choice = waiter.choice or "no"
         self._approval_waiters.pop(request_id, None)
         if choice == "always":
-            self._allowlist.add(key)
+            self._approval_scopes.add(scope)
         return choice in {"yes", "always"}
 
     def resolve_approval(self, request_id: str, choice: str) -> None:

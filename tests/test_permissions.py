@@ -25,9 +25,36 @@ def test_bashsafe_allows_readonly_commands():
     assert cls.decision == Decision.ALLOW
 
 
+def test_bashsafe_allows_common_test_commands() -> None:
+    assert classify_bash_command("pytest tests/test_x.py").decision == Decision.ALLOW
+    assert classify_bash_command("python -m pytest").decision == Decision.ALLOW
+    assert classify_bash_command("uv run pytest").decision == Decision.ALLOW
+    assert classify_bash_command("poetry run pytest").decision == Decision.ALLOW
+    assert classify_bash_command("npm test").decision == Decision.ALLOW
+    assert classify_bash_command("pnpm test").decision == Decision.ALLOW
+
+
+def test_bashsafe_allows_lint_type_and_format_checks() -> None:
+    assert classify_bash_command("ruff check .").decision == Decision.ALLOW
+    assert classify_bash_command("ruff format --check .").decision == Decision.ALLOW
+    assert classify_bash_command("mypy villani_code").decision == Decision.ALLOW
+
+
+def test_bashsafe_allows_version_and_git_readonly_commands() -> None:
+    assert classify_bash_command("python --version").decision == Decision.ALLOW
+    assert classify_bash_command("python -V").decision == Decision.ALLOW
+    assert classify_bash_command("node --version").decision == Decision.ALLOW
+    assert classify_bash_command("node -v").decision == Decision.ALLOW
+    assert classify_bash_command("git diff").decision == Decision.ALLOW
+    assert classify_bash_command("git log --oneline").decision == Decision.ALLOW
+    assert classify_bash_command("git show HEAD").decision == Decision.ALLOW
+    assert classify_bash_command("git branch").decision == Decision.ALLOW
+
+
 def test_bashsafe_rejects_chaining_and_install():
     assert classify_bash_command("pwd && whoami").decision == Decision.ASK
     assert classify_bash_command("pip install x").decision == Decision.ASK
+    assert classify_bash_command("ruff check . > out.txt").decision == Decision.ASK
 
 
 def test_bash_defaults_to_ask_without_bashsafe(tmp_path: Path):

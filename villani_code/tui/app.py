@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from textual.timer import Timer
 
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Key, MouseScrollDown, MouseScrollUp
-from textual.widgets import Input, Log, Static
+from textual.timer import Timer
+from textual.widgets import Input, Static
 
 from villani_code.interrupts import InterruptController
 from villani_code.tui.assets import LAUNCH_BANNER
@@ -19,7 +19,18 @@ from villani_code.tui.widgets.approval import ApprovalBar
 from villani_code.tui.widgets.status import StatusBarWidget
 
 
-class VillaniLog(Log):
+class VillaniTranscript(VerticalScroll):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._content_text = ""
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="log-content")
+
+    @property
+    def plain_text(self) -> str:
+        return self._content_text
+
     def _scroll_step(self, event: MouseScrollUp | MouseScrollDown) -> int:
         base = 12
         if getattr(event, "shift", False):
@@ -27,6 +38,12 @@ class VillaniLog(Log):
         if getattr(event, "ctrl", False) or getattr(event, "control", False):
             return base * 8
         return base
+
+    def append_text(self, text: str, follow_tail: bool) -> None:
+        self._content_text += text
+        self.query_one("#log-content", Static).update(self._content_text)
+        if follow_tail:
+            self.scroll_end(animate=False)
 
     def on_mouse_scroll_up(self, event: MouseScrollUp) -> None:
         app = self.app
@@ -69,7 +86,7 @@ class VillaniTUI(App[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main"):
-            yield VillaniLog(id="log")
+            yield VillaniTranscript(id="log")
             yield ApprovalBar()
             yield StatusBarWidget(id="status")
             with Horizontal(id="input-row"):
@@ -77,7 +94,7 @@ class VillaniTUI(App[None]):
                 yield Input(id="input")
 
     def on_mount(self) -> None:
-        log = self.query_one(VillaniLog)
+        log = self.query_one(VillaniTranscript)
         for line in LAUNCH_BANNER.splitlines():
             self._append_log_line(log, line)
         self._append_log_line(log, f"Model: {getattr(self.runner, 'model', 'unknown')}")
@@ -93,12 +110,12 @@ class VillaniTUI(App[None]):
             self.query_one(Input).focus()
         self.query_one(StatusBarWidget).set_follow_mode(self.follow_tail)
 
-    def _append_log(self, log: VillaniLog, text: str) -> None:
-        log.write(text, scroll_end=self.follow_tail)
+    def _append_log(self, log: VillaniTranscript, text: str) -> None:
+        log.append_text(text, follow_tail=self.follow_tail)
         self._log_plain_text += text
 
-    def _append_log_line(self, log: VillaniLog, text: str) -> None:
-        log.write_line(text, scroll_end=self.follow_tail)
+    def _append_log_line(self, log: VillaniTranscript, text: str) -> None:
+        log.append_text(f"{text}\n", follow_tail=self.follow_tail)
         self._log_plain_text += f"{text}\n"
 
     def _copy_to_clipboard(self, text: str) -> None:
@@ -141,7 +158,7 @@ class VillaniTUI(App[None]):
             return
         self.post_message(StatusUpdate("Interrupted current session. Press Ctrl+C again to exit Villani Code."))
 
-    def _end_ai_stream_if_open(self, log: VillaniLog) -> None:
+    def _end_ai_stream_if_open(self, log: VillaniTranscript) -> None:
         self._flush_stream_buffer(log)
         if self._ai_streaming:
             self._append_log(log, "\n")
@@ -158,9 +175,9 @@ class VillaniTUI(App[None]):
 
     def _flush_stream_timer(self) -> None:
         self._stream_flush_timer = None
-        self._flush_stream_buffer(self.query_one(VillaniLog))
+        self._flush_stream_buffer(self.query_one(VillaniTranscript))
 
-    def _flush_stream_buffer(self, log: VillaniLog) -> None:
+    def _flush_stream_buffer(self, log: VillaniTranscript) -> None:
         if not self._stream_buffer:
             return
         parts = self._stream_buffer.split("\n")
@@ -169,13 +186,13 @@ class VillaniTUI(App[None]):
             self._append_log_line(log, line)
         self._stream_buffer = ""
 
-    def _start_ai_boundary(self, log: VillaniLog) -> None:
+    def _start_ai_boundary(self, log: VillaniTranscript) -> None:
         if self._ai_started:
             return
         self._ai_started = True
 
     def on_log_append(self, message: LogAppend) -> None:
-        log = self.query_one(VillaniLog)
+        log = self.query_one(VillaniTranscript)
         text = message.text
         kind = message.kind
 
@@ -246,6 +263,7 @@ class VillaniTUI(App[None]):
             event.prevent_default()
             return
 
+        transcript = self.query_one(VillaniTranscript)
         if event.key == "space":
             focused = self.focused
             if isinstance(focused, Input) and not focused.disabled:
@@ -258,14 +276,14 @@ class VillaniTUI(App[None]):
             return
         if event.key == "home":
             self.set_follow_tail(False)
-            self.query_one(VillaniLog).scroll_home(animate=False)
+            transcript.scroll_home(animate=False)
         elif event.key == "pageup":
             self.set_follow_tail(False)
-            self.query_one(VillaniLog).scroll_page_up(animate=False)
+            transcript.scroll_page_up(animate=False)
         elif event.key == "pagedown":
-            self.query_one(VillaniLog).scroll_page_down(animate=False)
-            if self.query_one(VillaniLog).is_vertical_scroll_end:
+            transcript.scroll_page_down(animate=False)
+            if transcript.is_vertical_scroll_end:
                 self.set_follow_tail(True)
         elif event.key == "end":
             self.set_follow_tail(True)
-            self.query_one(VillaniLog).scroll_end(animate=False)
+            transcript.scroll_end(animate=False)
