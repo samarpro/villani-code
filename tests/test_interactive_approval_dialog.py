@@ -9,7 +9,7 @@ pytest.importorskip("textual")
 
 from textual.widgets import Input, ListView, Static
 
-from villani_code.tui.app import VillaniTUI
+from villani_code.tui.app import VillaniTUI, VillaniTranscript
 from villani_code.tui.controller import RunnerController
 from villani_code.tui.messages import ApprovalRequest
 from villani_code.tui.widgets.approval import ApprovalBar
@@ -86,7 +86,7 @@ def test_stylesheet_loads_and_app_mounts(tmp_path: Path) -> None:
         app = VillaniTUI(DummyRunner(), tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.query_one("#log") is not None
+            assert app.query_one("#log", VillaniTranscript) is not None
 
     asyncio.run(run())
 def test_approval_keys_are_contained_and_resolve_selection(tmp_path: Path) -> None:

@@ -6,8 +6,10 @@ import pytest
 pytest.importorskip("textual")
 
 from textual.widgets import Input
+from textual.css.query import NoMatches
+from textual.widgets import Log
 
-from villani_code.tui.app import VillaniTUI
+from villani_code.tui.app import VillaniTUI, VillaniTranscript
 from villani_code.tui.messages import LogAppend
 
 
@@ -53,12 +55,23 @@ def test_ai_stream_starts_on_fresh_line(tmp_path: Path) -> None:
             app.post_message(LogAppend(" world", kind="stream"))
             app.post_message(LogAppend("write out.py", kind="meta"))
             await pilot.pause()
-            log = app.query_one("#log")
-            lines = list(log.lines)
-            rendered = "\n".join(lines)
+            transcript = app.query_one(VillaniTranscript)
+            rendered = transcript.plain_text
             assert "> hihello" not in rendered
             assert "\nhello world" in rendered
             assert rendered.count("hello world") == 1
+
+    asyncio.run(run())
+
+
+def test_transcript_uses_wrapping_scroll_container_not_log_widget(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = VillaniTUI(DummyRunner(), tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.query_one("#log", VillaniTranscript) is not None
+            with pytest.raises(NoMatches):
+                app.query_one(Log)
 
     asyncio.run(run())
 

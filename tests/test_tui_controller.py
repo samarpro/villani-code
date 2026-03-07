@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 pytest.importorskip("textual")
@@ -27,6 +30,32 @@ class ExplodingRunner:
         raise RuntimeError("boom")
 
 
+class ApprovalRunner:
+    permissions = None
+    print_stream = False
+    approval_callback = None
+    event_callback = None
+
+
+def _request_with_choice(controller: RunnerController, app: DummyApp, tool: str, payload: dict[str, str], choice: str) -> bool:
+    approved: dict[str, bool] = {}
+
+    def worker() -> None:
+        approved["value"] = controller.request_approval(tool, payload)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    deadline = time.time() + 1
+    while time.time() < deadline:
+        req = next((m for m in app.messages if m.__class__.__name__ == "ApprovalRequest"), None)
+        if req is not None:
+            controller.resolve_approval(req.request_id, choice)
+            break
+        time.sleep(0.01)
+    thread.join(timeout=1)
+    return approved["value"]
+
+
 def test_tui_worker_logs_exception() -> None:
     app = DummyApp()
     controller = RunnerController(ExplodingRunner(), app)
@@ -38,3 +67,43 @@ def test_tui_worker_logs_exception() -> None:
     assert any("Traceback" in m.text for m in logs)
     assert any(isinstance(m, SpinnerState) and m.active is False for m in app.messages)
     assert any(isinstance(m, StatusUpdate) and m.text == "Idle" for m in app.messages)
+
+
+def test_always_scopes_read_across_different_files_in_session() -> None:
+    app = DummyApp()
+    controller = RunnerController(ApprovalRunner(), app)
+
+    assert _request_with_choice(controller, app, "Read", {"file_path": "a.txt"}, "always") is True
+    app.messages.clear()
+    assert controller.request_approval("Read", {"file_path": "b.txt"}) is True
+    assert not any(m.__class__.__name__ == "ApprovalRequest" for m in app.messages)
+
+
+def test_always_scopes_patch_across_different_files_in_session() -> None:
+    app = DummyApp()
+    controller = RunnerController(ApprovalRunner(), app)
+
+    assert _request_with_choice(controller, app, "Patch", {"file_path": "a.txt"}, "always") is True
+    app.messages.clear()
+    assert controller.request_approval("Patch", {"file_path": "b.txt"}) is True
+    assert not any(m.__class__.__name__ == "ApprovalRequest" for m in app.messages)
+
+
+def test_always_scopes_git_readonly_bash_commands_in_session() -> None:
+    app = DummyApp()
+    controller = RunnerController(ApprovalRunner(), app)
+
+    assert _request_with_choice(controller, app, "Bash", {"command": "git status"}, "always") is True
+    app.messages.clear()
+    assert controller.request_approval("Bash", {"command": "git   log --oneline"}) is True
+    assert not any(m.__class__.__name__ == "ApprovalRequest" for m in app.messages)
+
+
+def test_always_scope_does_not_auto_approve_unrelated_categories() -> None:
+    app = DummyApp()
+    controller = RunnerController(ApprovalRunner(), app)
+
+    assert _request_with_choice(controller, app, "Read", {"file_path": "a.txt"}, "always") is True
+    app.messages.clear()
+    assert _request_with_choice(controller, app, "Write", {"file_path": "a.txt"}, "no") is False
+    assert any(m.__class__.__name__ == "ApprovalRequest" for m in app.messages)
