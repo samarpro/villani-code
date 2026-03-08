@@ -310,7 +310,7 @@ def benchmark_run_cmd(
     suite: Path = typer.Option(Path("benchmark_tasks/villani_bench_v1"), "--suite"),
     private_suite: Optional[Path] = typer.Option(None, "--private-suite"),
     task: Optional[str] = typer.Option(None, "--task"),
-    agent: str = typer.Option("villani", "--agent"),
+    agent: list[str] = typer.Option(["villani"], "--agent", help="Benchmark agent(s): villani, aider, opencode. Repeat --agent to compare multiple agents."),
     model: Optional[str] = typer.Option(None, "--model"),
     base_url: Optional[str] = typer.Option(None, "--base-url"),
     api_key: Optional[str] = typer.Option(None, "--api-key"),
@@ -330,23 +330,25 @@ def benchmark_run_cmd(
         keep_workspace=keep_workspace,
         private_suite_dir=private_suite.resolve() if private_suite else None,
     )
-    result = runner.run(
-        suite_dir=suite.resolve(),
-        task_id=task,
-        agent=agent,
-        model=model,
-        base_url=base_url,
-        api_key=api_key,
-        repeat=repeat,
-        include_private=include_private,
-        family=family,
-        difficulty=difficulty,
-        tag=tag,
-        source_type=source_type,
-        language=language,
-        track=track,
-    )
-    console.print_json(json.dumps(result))
+    results_by_agent: dict[str, object] = {}
+    for agent_name in agent:
+        results_by_agent[agent_name] = runner.run(
+            suite_dir=suite.resolve(),
+            task_id=task,
+            agent=agent_name,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            repeat=repeat,
+            include_private=include_private,
+            family=family,
+            difficulty=difficulty,
+            tag=tag,
+            source_type=source_type,
+            language=language,
+            track=track,
+        )
+    console.print_json(json.dumps(results_by_agent if len(agent) > 1 else results_by_agent[agent[0]]))
 
 
 @benchmark_app.command("summary")
