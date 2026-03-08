@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-from villani_code.benchmark.adapters import AdapterRunConfig, build_adapter
+from villani_code.benchmark.agents import build_agent_runner
 from villani_code.benchmark.diff_stats import ensure_git_repo, line_stats, list_touched_files
 from villani_code.benchmark.manifest import command_set_checksum, repo_checksum
 from villani_code.benchmark.models import (
@@ -172,7 +172,9 @@ class BenchmarkRunner:
 
         with self.workspace.create(task.task_dir / "repo") as workspace_repo:
             ensure_git_repo(workspace_repo)
-            adapter = build_adapter(agent)
+            adapter = build_agent_runner(agent)
+            if not adapter.supports_model_override:
+                raise ValueError(f"Agent '{agent}' does not support model override; benchmark cannot ensure fair comparison.")
             if not benchmark_asset_integrity(task.task_dir):
                 failure_reason = FailureReason.BENCHMARK_ERROR
                 error = "task assets integrity check failed"
@@ -202,15 +204,13 @@ class BenchmarkRunner:
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
             try:
-                execution = adapter.run(
-                    AdapterRunConfig(
-                        prompt=task.prompt,
-                        workspace_repo=workspace_repo,
-                        timeout_seconds=timeout_seconds,
-                        model=model,
-                        base_url=base_url,
-                        api_key=api_key,
-                    )
+                execution = adapter.run_agent(
+                    repo_path=workspace_repo,
+                    prompt=task.prompt,
+                    model=model,
+                    base_url=base_url,
+                    api_key=api_key,
+                    timeout=timeout_seconds,
                 )
                 timeout = execution.timeout
                 telemetry_quality = execution.telemetry_quality
