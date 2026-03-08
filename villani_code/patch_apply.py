@@ -28,6 +28,19 @@ class FilePatch:
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
+
+
+def extract_unified_diff_targets(diff_text: str, default_file_path: str | None = None) -> list[str]:
+    patches = parse_unified_diff(diff_text)
+    if not patches:
+        if default_file_path:
+            return [_normalize_patch_path(default_file_path)]
+        return []
+    targets: list[str] = []
+    for file_patch in patches:
+        targets.append(_resolve_target_path(file_patch, default_file_path))
+    return targets
+
 def apply_unified_diff(repo: Path, diff_text: str, default_file_path: str | None = None) -> list[str]:
     patches = parse_unified_diff(diff_text)
     if not patches:

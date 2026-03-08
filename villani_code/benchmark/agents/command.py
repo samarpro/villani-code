@@ -24,5 +24,6 @@ class CommandAgentRunner(AgentRunner):
         base_url: str | None,
         api_key: str | None,
         provider: str | None,
+        benchmark_config_json: str | None = None,
     ) -> list[str]:
         return shlex.split(self.command) + [prompt]

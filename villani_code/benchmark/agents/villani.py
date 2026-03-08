@@ -28,6 +28,7 @@ class VillaniAgentRunner(AgentRunner):
         base_url: str | None,
         api_key: str | None,
         provider: str | None,
+        benchmark_config_json: str | None = None,
     ) -> list[str]:
         if not model:
             raise ValueError("villani requires --model")
@@ -49,6 +50,8 @@ class VillaniAgentRunner(AgentRunner):
             command.extend(["--base-url", base_url])
         if api_key:
             command.extend(["--api-key", api_key])
+        if benchmark_config_json:
+            command.extend(["--benchmark-runtime-json", benchmark_config_json])
         return command
 
     def run_agent(
@@ -60,8 +63,9 @@ class VillaniAgentRunner(AgentRunner):
         api_key: str | None,
         provider: str | None,
         timeout: int,
+        benchmark_config_json: str | None = None,
     ) -> AdapterRunResult:
-        base = super().run_agent(repo_path, prompt, model, base_url, api_key, provider, timeout)
+        base = super().run_agent(repo_path, prompt, model, base_url, api_key, provider, timeout, benchmark_config_json=benchmark_config_json)
         events_file = repo_path / ".villani_code" / "runtime_events.jsonl"
         events: list[AdapterEvent] = []
         if events_file.exists():
