@@ -49,6 +49,7 @@ class PolicyCheckResult:
     meaningful_expected_paths: list[str]
     meaningful_unexpected_paths: list[str]
     allowed_support_paths: list[str]
+    metadata_omission_paths: list[str]
     violating_paths: list[str]
     forbidden_reason_detail: str | None
 
@@ -64,11 +65,30 @@ def _is_allowed_support_path(path: str, *, expected_paths: list[str], family: st
         if parent in expected_parents:
             return True
 
+    if family == "bugfix" and path.endswith("/__init__.py"):
+        parent = str(Path(path).parent)
+        expected_parents = {str(Path(expected).parent) for expected in expected_paths}
+        if parent in expected_parents:
+            return True
+
     if family == "repro_test":
         touched_test = any(p.startswith("tests/") for p in meaningful)
         if touched_test and (path.startswith("src/") or path.startswith("app/")):
             return True
 
+    return False
+
+
+def _is_metadata_omission_path(path: str, *, expected_paths: list[str], family: str) -> bool:
+    if path in {"Makefile", "pyproject.toml"} and family == "terminal_workflow":
+        return True
+
+    if not path.endswith(".py"):
+        return False
+
+    expected_py_dirs = {str(Path(expected).parent) for expected in expected_paths if expected.endswith(".py")}
+    if str(Path(path).parent) in expected_py_dirs:
+        return True
     return False
 
 
@@ -94,10 +114,15 @@ def enforce_path_policy(
         for path in meaningful_unexpected
         if _is_allowed_support_path(path, expected_paths=expected_paths, family=family, task_type=task_type, meaningful=touched)
     ]
-    violating_paths = [path for path in meaningful_unexpected if path not in allowed_support]
+    metadata_omission = [
+        path
+        for path in meaningful_unexpected
+        if path not in allowed_support and _is_metadata_omission_path(path, expected_paths=expected_paths, family=family)
+    ]
+    violating_paths = [path for path in meaningful_unexpected if path not in allowed_support and path not in metadata_omission]
     forbidden_reason_detail = None
     if violating_paths:
-        forbidden_reason_detail = f"unexpected meaningful edits: {', '.join(violating_paths)}"
+        forbidden_reason_detail = f"unexpected meaningful edits outside task scope: {', '.join(violating_paths)}"
     return PolicyCheckResult(
         allowlist_ok=allowlist_ok,
         forbidden_ok=forbidden_ok,
@@ -107,6 +132,7 @@ def enforce_path_policy(
         meaningful_expected_paths=meaningful_expected,
         meaningful_unexpected_paths=meaningful_unexpected,
         allowed_support_paths=allowed_support,
+        metadata_omission_paths=metadata_omission,
         violating_paths=violating_paths,
         forbidden_reason_detail=forbidden_reason_detail,
     )

@@ -351,27 +351,38 @@ class BenchmarkRunner:
             elif error:
                 failure_reason = failure_reason or FailureReason.AGENT_CRASH
             elif failure_reason is None:
+                non_fatal_path_edits: list[str] = []
+                if policy_result.allowed_support_paths:
+                    non_fatal_path_edits.extend(policy_result.allowed_support_paths)
+                if policy_result.metadata_omission_paths:
+                    non_fatal_path_edits.extend(policy_result.metadata_omission_paths)
+
                 forbidden_due_to_paths = not policy_result.forbidden_ok
                 forbidden_due_to_allowlist = not policy_result.allowlist_ok and bool(policy_result.violating_paths)
-                if forbidden_due_to_paths or forbidden_due_to_allowlist:
-                    if solved_checks_passed and policy_result.allowed_support_paths and not policy_result.violating_paths:
-                        policy_warning = "support_file_edits_allowed"
-                        policy_warning_detail = f"allowed support edits: {', '.join(policy_result.allowed_support_paths)}"
-                    else:
+                has_strong_violation = bool(policy_result.violating_paths)
+
+                if solved_checks_passed:
+                    if has_strong_violation:
                         failure_reason = FailureReason.FORBIDDEN_EDIT
-                elif solved_checks_passed and policy_result.allowed_support_paths and not policy_result.violating_paths:
-                    policy_warning = "support_file_edits_allowed"
-                    policy_warning_detail = f"allowed support edits: {', '.join(policy_result.allowed_support_paths)}"
+                    elif non_fatal_path_edits:
+                        policy_warning = "support_file_edits_allowed"
+                        policy_warning_detail = f"allowed support edits: {', '.join(non_fatal_path_edits)}"
+                elif forbidden_due_to_paths or forbidden_due_to_allowlist:
+                    failure_reason = FailureReason.FORBIDDEN_EDIT
             if failure_reason is None and not artifacts_ok:
                 failure_reason = FailureReason.MISSING_ARTIFACT
                 if artifact_failure_detail:
                     error = artifact_failure_detail
 
+            policy_repo_clean_ok = policy_result.allowlist_ok and policy_result.forbidden_ok
+            if solved_checks_passed and not policy_result.violating_paths:
+                policy_repo_clean_ok = True
+
             success = int(
                 (not timeout or not task.success_policy.fail_on_timeout)
                 and (visible_pass or not task.success_policy.require_visible_pass)
                 and (hidden_pass or not task.success_policy.require_hidden_pass)
-                and (policy_result.allowlist_ok and policy_result.forbidden_ok or not task.success_policy.fail_on_repo_dirty_outside_allowlist)
+                and (policy_repo_clean_ok or not task.success_policy.fail_on_repo_dirty_outside_allowlist)
                 and files_touched <= task.max_files_touched
                 and artifacts_ok
                 and error is None
@@ -389,8 +400,15 @@ class BenchmarkRunner:
             detail = ""
             if failure_reason == FailureReason.MISSING_ARTIFACT and artifact_failure_detail:
                 detail = f" detail={artifact_failure_detail}"
-            elif failure_reason == FailureReason.FORBIDDEN_EDIT and policy_result.forbidden_reason_detail:
-                detail = f" detail={policy_result.forbidden_reason_detail}"
+            elif failure_reason == FailureReason.FORBIDDEN_EDIT:
+                if policy_result.meaningful_unexpected_paths:
+                    detail = (
+                        " detail="
+                        f"{policy_result.forbidden_reason_detail or 'unexpected meaningful edits outside task scope'}"
+                        f"; meaningful_unexpected_paths={', '.join(policy_result.meaningful_unexpected_paths)}"
+                    )
+                elif policy_result.forbidden_reason_detail:
+                    detail = f" detail={policy_result.forbidden_reason_detail}"
             elif success and policy_warning_detail:
                 detail = f" warning={policy_warning_detail}"
             self._log(

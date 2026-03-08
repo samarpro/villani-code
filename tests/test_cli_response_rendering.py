@@ -22,12 +22,10 @@ def test_print_response_text_blocks_handles_all_malformed_shapes(monkeypatch) ->
         "not-a-dict",
         1,
         {"response": None},
-        {"response": "plain"},
         {"response": []},
         {"response": {"content": None}},
-        {"response": {"content": "plain"}},
         {"response": {"content": {"type": "text", "text": "x"}}},
-        {"response": {"content": [123, object(), {"text": "missing-type"}, {"type": "text", "text": 7}, {"type": "json", "text": "skip"}]}} ,
+        {"response": {"content": [123, object(), {"text": "missing-type"}, {"type": "text", "text": 7}, {"type": "json", "text": "skip"}]}}
     ]
 
     for item in malformed_inputs:
@@ -54,6 +52,16 @@ def test_print_response_text_blocks_prints_valid_text_blocks(monkeypatch) -> Non
     )
 
     assert recorder.lines == ["hello", "world", "!"]
+
+
+def test_print_response_text_blocks_prints_plain_response_and_content_strings(monkeypatch) -> None:
+    recorder = _Recorder()
+    monkeypatch.setattr(cli, "console", recorder)
+
+    cli._print_response_text_blocks({"response": "plain response"})
+    cli._print_response_text_blocks({"response": {"content": "plain content"}})
+
+    assert recorder.lines == ["plain response", "plain content"]
 
 
 def test_print_response_text_blocks_never_raises_when_console_print_fails(monkeypatch) -> None:

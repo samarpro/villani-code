@@ -289,7 +289,7 @@ def test_solved_task_with_unrelated_edit_still_fails_forbidden_with_detail(monke
 
     out = capsys.readouterr().out
     assert "reason=forbidden_edit" in out
-    assert "detail=unexpected meaningful edits: README.md" in out
+    assert "detail=unexpected meaningful edits outside task scope: README.md" in out
 
     from villani_code.benchmark.reporting import load_results
 
@@ -297,7 +297,7 @@ def test_solved_task_with_unrelated_edit_still_fails_forbidden_with_detail(monke
     assert row.success == 0
     assert row.failure_reason is not None
     assert row.failure_reason.value == "forbidden_edit"
-    assert row.forbidden_reason_detail == "unexpected meaningful edits: README.md"
+    assert row.forbidden_reason_detail == "unexpected meaningful edits outside task scope: README.md"
     assert row.meaningful_unexpected_paths == ["README.md"]
 
 
@@ -314,4 +314,117 @@ def test_policy_reports_unexpected_meaningful_paths() -> None:
     assert policy.meaningful_expected_paths == ["src/app.py"]
     assert policy.meaningful_unexpected_paths == ["tests/test_app.py"]
     assert policy.violating_paths == ["tests/test_app.py"]
-    assert policy.forbidden_reason_detail == "unexpected meaningful edits: tests/test_app.py"
+    assert policy.forbidden_reason_detail == "unexpected meaningful edits outside task scope: tests/test_app.py"
+
+
+def test_solved_task_with_metadata_omission_edit_is_allowed_with_warning(monkeypatch, capsys) -> None:
+    from villani_code.benchmark.models import FairnessClassification
+
+    class FakeRunner:
+        name = "villani"
+        version = "1"
+        capability = "cli_wrapper"
+        telemetry_capability = "coarse_process_only"
+        fairness_classification = FairnessClassification.COARSE_WRAPPER_ONLY
+        fairness_notes = "fake"
+        supports_model_override = True
+
+        def run_agent(self, **kwargs):
+            return AdapterRunResult(
+                stdout="",
+                stderr="",
+                exit_code=0,
+                timeout=False,
+                runtime_seconds=0.1,
+                telemetry_quality=TelemetryQuality.INFERRED,
+                telemetry_field_quality_map={"num_shell_commands": FieldQuality.INFERRED},
+                events=[],
+            )
+
+    monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda agent: FakeRunner())
+    monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda repo: ["src/app/a.py", "src/app/aliases.py", ".villani_code/state.json"])
+    monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda repo: (2, 0))
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds: (True, [], 1.0, 2.0))
+
+    runner = BenchmarkRunner(output_dir=Path("artifacts/benchmark-test"))
+    data = runner.run(
+        suite_dir=Path("benchmark_tasks/villani_bench_v1"),
+        task_id="localize_004_command_alias_registration",
+        agent="villani",
+        model="tiny-model",
+        base_url=None,
+        api_key=None,
+    )
+
+    out = capsys.readouterr().out
+    assert "warning=allowed support edits: src/app/aliases.py" in out
+
+    from villani_code.benchmark.reporting import load_results
+
+    row = load_results(Path(data["results_path"]))[0]
+    assert row.success == 1
+    assert row.failure_reason is None
+    assert row.policy_warning == "support_file_edits_allowed"
+    assert row.policy_warning_detail == "allowed support edits: src/app/aliases.py"
+    assert row.meaningful_unexpected_paths == ["src/app/aliases.py"]
+
+
+def test_terminal_workflow_policy_classifies_metadata_omission_paths() -> None:
+    policy = enforce_path_policy(
+        touched=["app/__main__.py", "pyproject.toml"],
+        allowlist=["app/", "tests/", "Makefile"],
+        forbidden=[".git/"],
+        expected_paths=["app/__main__.py", "Makefile", "tests/test_basic.py"],
+        family="terminal_workflow",
+        task_type="single_file_bugfix",
+    )
+    assert policy.allowed_support_paths == ["pyproject.toml"]
+    assert policy.metadata_omission_paths == []
+    assert policy.violating_paths == []
+
+
+def test_solved_task_with_expected_file_outside_allowlist_still_succeeds(monkeypatch) -> None:
+    from villani_code.benchmark.models import FairnessClassification
+
+    class FakeRunner:
+        name = "villani"
+        version = "1"
+        capability = "cli_wrapper"
+        telemetry_capability = "coarse_process_only"
+        fairness_classification = FairnessClassification.COARSE_WRAPPER_ONLY
+        fairness_notes = "fake"
+        supports_model_override = True
+
+        def run_agent(self, **kwargs):
+            return AdapterRunResult(
+                stdout="",
+                stderr="",
+                exit_code=0,
+                timeout=False,
+                runtime_seconds=0.1,
+                telemetry_quality=TelemetryQuality.INFERRED,
+                telemetry_field_quality_map={"num_shell_commands": FieldQuality.INFERRED},
+                events=[],
+            )
+
+    monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda agent: FakeRunner())
+    monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda repo: ["app/__main__.py", "pyproject.toml"])
+    monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda repo: (2, 0))
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds: (True, [], 1.0, 2.0))
+
+    runner = BenchmarkRunner(output_dir=Path("artifacts/benchmark-test"))
+    data = runner.run(
+        suite_dir=Path("benchmark_tasks/villani_bench_v1"),
+        task_id="terminal_005_lint_invocation",
+        agent="villani",
+        model="tiny-model",
+        base_url=None,
+        api_key=None,
+    )
+
+    from villani_code.benchmark.reporting import load_results
+
+    row = load_results(Path(data["results_path"]))[0]
+    assert row.success == 1
+    assert row.failure_reason is None
+    assert row.meaningful_unexpected_paths == []
