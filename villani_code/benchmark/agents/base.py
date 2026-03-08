@@ -31,6 +31,7 @@ class AgentRunner(ABC):
         base_url: str | None,
         api_key: str | None,
         provider: str | None,
+        benchmark_config_json: str | None = None,
     ) -> list[str]:
         raise NotImplementedError
 
@@ -74,9 +75,10 @@ class AgentRunner(ABC):
         api_key: str | None,
         provider: str | None,
         timeout: int,
+        benchmark_config_json: str | None = None,
     ) -> AdapterRunResult:
         started = time.monotonic()
-        command = self.build_command(repo_path, prompt, model, base_url, api_key, provider)
+        command = self.build_command(repo_path, prompt, model, base_url, api_key, provider, benchmark_config_json=benchmark_config_json)
         env = self.build_env(base_url=base_url, api_key=api_key)
         events = [AdapterEvent(type="command_started", timestamp=time.monotonic(), payload={"command": " ".join(command)})]
         proc = subprocess.Popen(command, cwd=repo_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)

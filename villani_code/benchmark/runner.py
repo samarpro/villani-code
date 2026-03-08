@@ -26,6 +26,7 @@ from villani_code.benchmark.policy import (
     enforce_path_policy,
 )
 from villani_code.benchmark.reporting import render_summary_table, summarize, write_markdown_report, write_results
+from villani_code.benchmark.runtime_config import benchmark_runtime_config_from_task
 from villani_code.benchmark.task_loader import load_tasks
 from villani_code.benchmark.verifier import run_commands
 from villani_code.benchmark.workspace import WorkspaceManager
@@ -253,6 +254,7 @@ class BenchmarkRunner:
 
             try:
                 self._log("starting agent process...")
+                benchmark_config_json = benchmark_runtime_config_from_task(task).model_dump_json() if adapter.name == "villani" else None
                 execution = adapter.run_agent(
                     repo_path=workspace_repo,
                     prompt=task.prompt,
@@ -261,6 +263,7 @@ class BenchmarkRunner:
                     api_key=api_key,
                     provider=provider,
                     timeout=timeout_seconds,
+                    benchmark_config_json=benchmark_config_json,
                 )
                 timeout = execution.timeout
                 telemetry_quality = execution.telemetry_quality

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from villani_code.benchmark.runtime_config import BenchmarkRuntimeConfig
 from villani_code.utils import now_local_date
 
 
-def build_system_blocks(repo: Path, repo_map: str = "", villani_mode: bool = False) -> list[dict[str, str]]:
+def build_system_blocks(repo: Path, repo_map: str = "", villani_mode: bool = False, benchmark_config: BenchmarkRuntimeConfig | None = None) -> list[dict[str, str]]:
     text = (
         "You are an interactive Villani Code agent for software engineering tasks. "
         "Use tools conservatively, verify changes, and keep outputs concise."
@@ -16,6 +17,13 @@ def build_system_blocks(repo: Path, repo_map: str = "", villani_mode: bool = Fal
             "Proactively inspect the repo, choose high-value verifiable tasks, execute edits, verify every change, "
             "and continue until no clearly worthwhile work remains or a real blocker is reached. "
             "Do not ask for permission for normal local repo operations, avoid giant speculative rewrites, and report verification honestly."
+        )
+    benchmark_enabled = bool(benchmark_config and benchmark_config.enabled)
+    if benchmark_enabled:
+        text = (
+            "You are running a bounded benchmark task. Patch only in allowed scope, avoid scratch/helper/exploratory files unless explicitly allowed, "
+            "and make the minimal robust fix in real target files. Completion requires at least one actual in-scope code/test patch. "
+            "Do not overfit visible checks; prefer fixes that satisfy hidden verification too. If a write is blocked by policy, redirect to the real allowed target file."
         )
     instructions = load_project_instructions(repo)
     blocks = [{"type": "text", "text": text}]

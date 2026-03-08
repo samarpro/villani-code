@@ -3,9 +3,50 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from villani_code.patch_apply import PatchApplyError, extract_unified_diff_targets
 from villani_code.permissions import Decision
 from villani_code.repo_rules import classify_repo_path, is_ignored_repo_path
 from villani_code.tools import execute_tool
+
+
+def _benchmark_mutation_targets(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
+    if tool_name == "Write":
+        path = str(tool_input.get("file_path", ""))
+        return [path] if path else []
+    if tool_name == "Patch":
+        diff = str(tool_input.get("unified_diff", ""))
+        default_path = str(tool_input.get("file_path", "") or "") or None
+        try:
+            return extract_unified_diff_targets(diff, default_file_path=default_path)
+        except PatchApplyError:
+            return [default_path] if default_path else []
+    return []
+
+
+def _validate_benchmark_mutation(runner: Any, tool_name: str, tool_input: dict[str, Any]) -> str | None:
+    config = runner.benchmark_config
+    if not config.enabled or tool_name not in {"Write", "Patch"}:
+        return None
+    targets = _benchmark_mutation_targets(tool_name, tool_input)
+    if not targets:
+        return f"benchmark_policy_denied: task_id={config.task_id} reason=no_target_paths"
+    normalized_targets = [config.normalized_path(path) for path in targets]
+    if len(set(normalized_targets)) > config.max_files_touched:
+        return (
+            f"benchmark_policy_denied: task_id={config.task_id} reason=max_files_touched_exceeded "
+            f"limit={config.max_files_touched} touched={len(set(normalized_targets))}"
+        )
+    for raw_path, path in zip(targets, normalized_targets):
+        if not config.in_allowlist(path):
+            return f"benchmark_policy_denied: task_id={config.task_id} reason=outside_allowlist path={path}"
+        if config.in_forbidden(path):
+            return f"benchmark_policy_denied: task_id={config.task_id} reason=forbidden_path path={path}"
+        if not config.is_expected_or_support(path):
+            return f"benchmark_policy_denied: task_id={config.task_id} reason=not_expected_or_support path={path}"
+        classification = classify_repo_path(path)
+        if is_ignored_repo_path(path) or classification in {"runtime_artifact", "editor_artifact", "vcs_internal"}:
+            return f"benchmark_policy_denied: task_id={config.task_id} reason=ignored_or_runtime_artifact path={path}"
+    return None
 
 
 def execute_tool_with_policy(
@@ -59,6 +100,21 @@ def execute_tool_with_policy(
     elif runner.plan_mode != "off" and tool_name in {"Write", "Patch"}:
         return {"content": "Plan mode: edit not executed", "is_error": False}
 
+    benchmark_violation = _validate_benchmark_mutation(runner, tool_name, tool_input)
+    if benchmark_violation:
+        event_type = "benchmark_write_blocked" if tool_name == "Write" else "benchmark_patch_blocked"
+        runner.event_callback(
+            {
+                "type": event_type,
+                "task_id": runner.benchmark_config.task_id,
+                "tool": tool_name,
+                "input": tool_input,
+                "reason": benchmark_violation,
+                "paths": _benchmark_mutation_targets(tool_name, tool_input),
+            }
+        )
+        return {"content": benchmark_violation, "is_error": True}
+
     if runner.villani_mode and tool_name in {"Write", "Patch"}:
         target = str(tool_input.get("file_path", ""))
         if target:
@@ -84,10 +140,12 @@ def execute_tool_with_policy(
                 before_text = target_path.read_text(encoding="utf-8", errors="replace")
                 runner._before_contents[normalized_target] = before_text
                 runner._current_verification_before_contents[normalized_target] = before_text
-        runner.checkpoints.create(
-            [Path(tool_input.get("file_path", ""))],
-            message_index=message_count,
-        )
+        checkpoint_target = str(tool_input.get("file_path", "")).strip()
+        if checkpoint_target:
+            runner.checkpoints.create(
+                [Path(checkpoint_target)],
+                message_index=message_count,
+            )
     runner.event_callback(
         {
             "type": "tool_started",

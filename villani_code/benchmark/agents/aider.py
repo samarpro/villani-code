@@ -16,6 +16,7 @@ class AiderAgentRunner(AgentRunner):
         base_url: str | None,
         api_key: str | None,
         provider: str | None,
+        benchmark_config_json: str | None = None,
     ) -> list[str]:
         if not model:
             raise ValueError("aider requires --model for fair same-model benchmarking")

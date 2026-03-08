@@ -27,6 +27,7 @@ from villani_code.live_display import apply_live_display_delta
 from villani_code.mcp import load_mcp_config
 from villani_code.permissions import Decision, PermissionConfig, PermissionEngine
 from villani_code.prompting import build_initial_messages, build_system_blocks
+from villani_code.benchmark.runtime_config import BenchmarkRuntimeConfig
 from villani_code.llm_client import LLMClient
 from villani_code.repo_map import build_repo_map
 from villani_code.runtime_safety import ensure_runtime_dependencies_not_shadowed
@@ -71,6 +72,7 @@ class Runner:
         small_model: bool = False,
         villani_mode: bool = False,
         villani_objective: str | None = None,
+        benchmark_config: BenchmarkRuntimeConfig | None = None,
     ):
         self.client = client
         self.repo = repo
@@ -96,6 +98,8 @@ class Runner:
         self.villani_config = VillaniModeConfig(
             enabled=villani_mode, steering_objective=villani_objective
         )
+        self.benchmark_config = benchmark_config or BenchmarkRuntimeConfig()
+        self._benchmark_noop_completion_attempts = 0
         self.console = Console()
         self.permissions = PermissionEngine(
             PermissionConfig.from_strings(
@@ -179,6 +183,7 @@ class Runner:
             self.repo,
             repo_map=self._repo_map if self.small_model else "",
             villani_mode=self.villani_mode,
+            benchmark_config=self.benchmark_config,
         )
         tools = tool_specs()
         transcript: dict[str, Any] = {
@@ -188,6 +193,13 @@ class Runner:
             "tool_results": [],
             "streamed_events_count": 0,
         }
+        if self.benchmark_config.enabled:
+            self.event_callback({
+                "type": "benchmark_mode_enabled",
+                "task_id": self.benchmark_config.task_id,
+                "allowlist_paths": self.benchmark_config.allowlist_paths,
+                "expected_files": self.benchmark_config.expected_files,
+            })
         self._save_session_snapshot(messages)
         empty_turn_retries = 0
         start = time.monotonic()
@@ -214,6 +226,20 @@ class Runner:
         def _change_summary() -> tuple[list[str], list[str], list[str]]:
             summary = summarize_changes(_attributed_changed_files())
             return summary.intentional, summary.incidental, summary.all_changes
+
+        def _has_meaningful_benchmark_edit() -> bool:
+            if not self.benchmark_config.enabled:
+                return True
+            intentional_changes, _incidental, _all = _change_summary()
+            if not intentional_changes:
+                return False
+            meaningful = [
+                path
+                for path in intentional_changes
+                if self.benchmark_config.in_allowlist(path)
+                and self.benchmark_config.is_expected_or_support(path)
+            ]
+            return bool(meaningful)
 
         def _finish_bounded(
             response: dict[str, Any], reason: str, completed: bool
@@ -344,6 +370,15 @@ class Runner:
                 empty_turn_retries = 0
             if not tool_uses:
                 if empty:
+                    if self.benchmark_config.enabled and not _has_meaningful_benchmark_edit():
+                        self._benchmark_noop_completion_attempts += 1
+                        self.event_callback({"type": "benchmark_noop_completion_blocked", "task_id": self.benchmark_config.task_id, "attempt": self._benchmark_noop_completion_attempts})
+                        if self._benchmark_noop_completion_attempts >= 2:
+                            return _finish_bounded(response, "benchmark_incomplete_no_patch", False)
+                        reminder = "Benchmark mode requires an actual in-scope patch. Edit only expected/allowed support files and continue."
+                        self.event_callback({"type": "benchmark_scope_reminder_injected", "task_id": self.benchmark_config.task_id, "reason": "no_meaningful_edit"})
+                        messages.append({"role": "user", "content": [{"type": "text", "text": reminder}]})
+                        continue
                     reason = _budget_reason(completed=True)
                     if reason:
                         return _finish_bounded(response, reason, reason == "completed")
@@ -427,6 +462,15 @@ class Runner:
                             }
                         )
                         continue
+                if self.benchmark_config.enabled and not _has_meaningful_benchmark_edit():
+                    self._benchmark_noop_completion_attempts += 1
+                    self.event_callback({"type": "benchmark_noop_completion_blocked", "task_id": self.benchmark_config.task_id, "attempt": self._benchmark_noop_completion_attempts})
+                    if self._benchmark_noop_completion_attempts >= 2:
+                        return _finish_bounded(response, "benchmark_incomplete_no_patch", False)
+                    reminder = "Benchmark mode requires a real patch in task scope before completion."
+                    self.event_callback({"type": "benchmark_scope_reminder_injected", "task_id": self.benchmark_config.task_id, "reason": "no_meaningful_edit"})
+                    messages.append({"role": "user", "content": [{"type": "text", "text": reminder}]})
+                    continue
                 reason = _budget_reason(completed=True)
                 if reason:
                     return _finish_bounded(response, reason, reason == "completed")
@@ -548,6 +592,8 @@ class Runner:
             previous_attributed = attributed
             if edited_this_turn:
                 consecutive_no_edit_turns = 0
+                if self.benchmark_config.enabled and _has_meaningful_benchmark_edit():
+                    self._benchmark_noop_completion_attempts = 0
             else:
                 consecutive_no_edit_turns += 1
 

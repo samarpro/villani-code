@@ -114,7 +114,7 @@ def test_villani_run_agent_missing_runtime_events_file_is_best_effort(monkeypatc
     from villani_code.benchmark.adapters.base import AdapterEvent, AdapterRunResult
     from villani_code.benchmark.models import FieldQuality, TelemetryQuality
 
-    def fake_run_agent(self, repo_path, prompt, model, base_url, api_key, provider, timeout):
+    def fake_run_agent(self, repo_path, prompt, model, base_url, api_key, provider, timeout, benchmark_config_json=None):
         return AdapterRunResult(
             stdout='ok',
             stderr='',
@@ -142,3 +142,17 @@ def test_villani_run_agent_missing_runtime_events_file_is_best_effort(monkeypatc
     assert result.stdout == 'ok'
     assert len(result.events) == 1
     assert result.telemetry_quality == TelemetryQuality.INFERRED
+
+
+def test_villani_command_includes_benchmark_runtime_json_when_present() -> None:
+    runner = VillaniAgentRunner()
+    cmd = runner.build_command(
+        Path('/tmp/repo'),
+        'fix bug',
+        model='qwen-9b',
+        base_url=None,
+        api_key=None,
+        provider='anthropic',
+        benchmark_config_json='{"enabled":true,"task_id":"t"}',
+    )
+    assert '--benchmark-runtime-json' in cmd
