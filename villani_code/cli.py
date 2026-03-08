@@ -38,12 +38,14 @@ def _print_response_text_blocks(result: dict[str, Any] | None) -> None:
 
         response = result.get("response")
         if isinstance(response, str):
+            console.print(response)
             return
         if not isinstance(response, dict):
             return
 
         content = response.get("content")
         if isinstance(content, str):
+            console.print(content)
             return
         if not isinstance(content, list):
             return

@@ -19,4 +19,5 @@ allowlist_paths:
 - app/
 - tests/
 - Makefile
+- pyproject.toml
 benchmark_track: core
