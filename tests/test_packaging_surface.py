@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib.resources
 import importlib.util
 import re
+
+import pytest
 from pathlib import Path
 
 
@@ -24,3 +27,15 @@ def test_import_surface_contains_cli_and_not_legacy_ui() -> None:
     assert importlib.util.find_spec("villani_code") is not None
     assert importlib.util.find_spec("villani_code.cli") is not None
     assert importlib.util.find_spec("ui") is None
+
+
+def test_tui_stylesheet_is_packaged_with_module() -> None:
+    stylesheet = importlib.resources.files("villani_code.tui").joinpath("styles.tcss")
+    assert stylesheet.is_file(), "styles.tcss is missing from the installed villani_code.tui package"
+
+
+def test_tui_app_css_path_points_to_stylesheet() -> None:
+    pytest.importorskip("textual")
+    from villani_code.tui.app import VillaniTUI
+
+    assert VillaniTUI.CSS_PATH == "styles.tcss"
