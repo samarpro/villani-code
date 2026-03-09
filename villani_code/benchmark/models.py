@@ -157,14 +157,7 @@ class BenchmarkTask(BaseModel):
     @model_validator(mode="after")
     def _validate_task_dir(self) -> "BenchmarkTask":
         if self.hidden_verifier:
-            if self.hidden_verification and self.hidden_verifier != self.hidden_verification:
-                # keep deterministic canonical behavior: hidden_verification wins
-                self.hidden_verifier = None
-            elif not self.hidden_verification:
-                self.hidden_verification = list(self.hidden_verifier)
-                self.hidden_verifier = None
-            else:
-                self.hidden_verifier = None
+            self.hidden_verifier = None
         if not (self.task_dir / "repo").is_dir():
             raise ValueError(f"Task {self.id} is missing repo/")
         return self

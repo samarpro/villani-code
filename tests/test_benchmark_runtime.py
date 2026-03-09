@@ -326,9 +326,10 @@ def test_aggregate_results_includes_new_constraint_metrics() -> None:
             "self_corrected_after_failed_verify": True,
         }
     )
+    row3 = row1.model_copy(update={"task_id": "t3", "recovery_success": None})
     import json
 
-    agg = json.loads(aggregate_results([row1, row2]))
+    agg = json.loads(aggregate_results([row1, row2, row3]))
     assert "forbidden_edit_rate" in agg["overall"]
     assert "hidden_pass_rate" in agg["overall"]
     assert "visible_only_rate" in agg["overall"]
@@ -338,7 +339,7 @@ def test_aggregate_results_includes_new_constraint_metrics() -> None:
     assert "no_progress_collapse_rate" in agg["overall"]
     assert "self_corrected_after_failed_verify_rate" in agg["overall"]
     assert agg["overall"]["recovery_success_rate"] == 0.5
-    assert agg["overall"]["no_progress_collapse_rate"] == 0.5
+    assert agg["overall"]["no_progress_collapse_rate"] == 0.3333
 
 
 def _minimal_task(tmp_path: Path, **overrides) -> BenchmarkTask:
@@ -491,5 +492,5 @@ def test_recovery_attempt_semantics() -> None:
     from villani_code.benchmark.models import FailureReason
 
     assert BenchmarkRunner._recovery_attempted(1, 1, False, FailureReason.HIDDEN_VERIFICATION_FAILED) is True
-    assert BenchmarkRunner._recovery_attempted(0, 1, True, None) is False
-    assert BenchmarkRunner._recovery_attempted(0, 2, False, FailureReason.VISIBLE_VERIFICATION_FAILED) is True
+    assert BenchmarkRunner._recovery_attempted(0, 1, False, None) is False
+    assert BenchmarkRunner._recovery_attempted(0, 2, True, FailureReason.VISIBLE_VERIFICATION_FAILED) is True

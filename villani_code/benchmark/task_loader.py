@@ -55,8 +55,12 @@ def load_task(task_dir: Path) -> BenchmarkTask:
     hidden_verifier = payload.get("hidden_verifier")
     if hidden_verification is None and hidden_verifier is not None:
         payload["hidden_verification"] = hidden_verifier
+        payload.pop("hidden_verifier", None)
     elif hidden_verification is not None and hidden_verifier is not None:
         if hidden_verification == hidden_verifier:
+            payload.pop("hidden_verifier", None)
+        else:
+            payload["_hidden_verifier_conflict"] = True
             payload.pop("hidden_verifier", None)
 
     payload["task_dir"] = task_dir
