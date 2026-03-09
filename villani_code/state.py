@@ -469,60 +469,79 @@ class Runner:
                             return _finish_bounded(
                                 response, reason, reason == "completed"
                             )
-                    if self._no_progress_cycles < 3:
-                        recovery_text = "RECOVERY MODE: State the single target file, the exact verification goal, and make exactly one next tool call."
-                        if self._recovery_count >= 1:
-                            recovery_text = "RECOVERY MODE: Do not edit yet. In <=5 lines explain the blocker, inspect exactly one relevant file/diff, then either patch the locked target or finish."
+                    constrained = self.small_model or self.villani_mode or self.benchmark_config.enabled
+                    if constrained and self._recovery_count == 0:
                         messages.append(
                             {
                                 "role": "user",
-                                "content": [{"type": "text", "text": recovery_text}],
+                                "content": [{"type": "text", "text": "RECOVERY MODE: State the single target file, the exact verification goal, and make exactly one next tool call."}],
                             }
                         )
-                        reason = _budget_reason()
-                        if reason:
-                            return _finish_bounded(
-                                response, reason, reason == "completed"
-                            )
+                        self._recovery_count = 1
+                        self._no_progress_cycles = 0
                         continue
+                    if constrained and self._recovery_count == 1:
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": [{"type": "text", "text": "RECOVERY MODE: Do not edit yet. In <=5 lines explain the blocker, inspect exactly one relevant file/diff, then either patch the locked target or finish."}],
+                            }
+                        )
+                        self._recovery_count = 2
+                        self._no_progress_cycles = 0
+                        continue
+                    if constrained and self._recovery_count >= 2:
+                        blocked_reason = "repeated no-progress recovery with no new verification evidence"
+                        response = {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        f"Stopping due to constrained-run blocker: {blocked_reason}. "
+                                        f"Locked targets: {sorted(self._intended_targets)}. "
+                                        f"Scope expansion consumed: {self._scope_expansion_used}. "
+                                        "Missing evidence: a new bounded patch or new verification signal. "
+                                        f"Success predicate: {self._task_contract.get('success_predicate', 'make one bounded, verifiable repo improvement')}."
+                                    ),
+                                }
+                            ],
+                        }
+                        transcript["responses"].append(response)
+                    elif not constrained and self._recovery_count == 0:
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": [{"type": "text", "text": "RECOVERY MODE: State the single target file, the exact verification goal, and make exactly one next tool call."}],
+                            }
+                        )
+                        self._recovery_count = 1
+                        self._no_progress_cycles = 0
+                        continue
+                    elif not constrained and self._recovery_count == 1:
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": [{"type": "text", "text": "RECOVERY MODE: Do not edit yet. In <=5 lines explain the blocker, inspect exactly one relevant file/diff, then either patch the locked target or finish."}],
+                            }
+                        )
+                        self._recovery_count = 2
+                        self._no_progress_cycles = 0
+                        continue
+                    elif not constrained and self._recovery_count >= 2:
+                        response = {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "I’m still blocked after two recovery attempts. Which target scope or missing verification evidence should I relax first?",
+                                }
+                            ],
+                        }
+                        transcript["responses"].append(response)
                 else:
                     self._no_progress_cycles = 0
                     self._recovery_count = 0
-                if self._no_progress_cycles >= 3:
-                    if self._recovery_count >= 2:
-                        if self.benchmark_config.enabled or self.villani_mode:
-                            blocked_reason = "repeated no-progress recovery with no new verification evidence"
-                            response = {
-                                "role": "assistant",
-                                "content": [
-                                    {
-                                        "type": "text",
-                                        "text": (
-                                            f"Stopping due to constrained-run blocker: {blocked_reason}. "
-                                            f"Locked targets: {sorted(self._intended_targets)}. "
-                                            f"Scope expansion consumed: {self._scope_expansion_used}. "
-                                            "Missing evidence: a new bounded patch or new verification signal. "
-                                            f"Success predicate: {self._task_contract.get('success_predicate', 'make one bounded, verifiable repo improvement')}."
-                                        ),
-                                    }
-                                ],
-                            }
-                            transcript["responses"].append(response)
-                        else:
-                            response = {
-                                "role": "assistant",
-                                "content": [
-                                    {
-                                        "type": "text",
-                                        "text": "I’m still blocked after two recovery attempts. Which target scope or missing verification evidence should I relax first?",
-                                    }
-                                ],
-                            }
-                            transcript["responses"].append(response)
-                    else:
-                        self._recovery_count += 1
-                        self._no_progress_cycles = 0
-                        continue
                 if self.benchmark_config.enabled and not _has_meaningful_benchmark_edit():
                     self._benchmark_noop_completion_attempts += 1
                     self.event_callback({"type": "benchmark_noop_completion_blocked", "task_id": self.benchmark_config.task_id, "attempt": self._benchmark_noop_completion_attempts})

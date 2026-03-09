@@ -373,3 +373,35 @@ def test_stall_in_villani_mode_terminates_without_relax_prompt(tmp_path: Path):
     assert "constraint should I relax" not in joined
     assert "Stopping due to constrained-run blocker" in joined
     assert "Success predicate:" in joined
+
+
+def test_constrained_run_injects_task_contract_message(tmp_path: Path):
+    class Client:
+        def __init__(self):
+            self.first_payload = None
+
+        def create_message(self, payload, stream):
+            if self.first_payload is None:
+                self.first_payload = payload
+            return {"id": "1", "role": "assistant", "content": [{"type": "text", "text": "done"}]}
+
+    client = Client()
+    runner = Runner(client=client, repo=tmp_path, model="m", stream=False, small_model=True, plan_mode="off")
+    runner.run("fix failing test in src/app.py")
+    assert client.first_payload is not None
+    texts = [b.get("text", "") for m in client.first_payload["messages"] for b in m.get("content", []) if isinstance(b, dict) and b.get("type") == "text"]
+    contract_lines = [t for t in texts if "Task contract" in t]
+    assert contract_lines
+    assert "name likely target file first" in contract_lines[-1]
+
+
+def test_constrained_recovery_stages_then_terminates(tmp_path: Path):
+    client = FakeClientStall()
+    runner = Runner(client=client, repo=tmp_path, model="m", stream=False, small_model=True, plan_mode="off")
+    out = runner.run("inspect and fix")
+    text_blocks = [b.get("text", "") for b in out["response"]["content"] if b.get("type") == "text"]
+    assert any("Stopping due to constrained-run blocker" in t for t in text_blocks)
+    all_msgs = [m for p in client.payloads for m in p.get("messages", [])]
+    text_msgs = [b.get("text", "") for m in all_msgs for b in m.get("content", []) if isinstance(b, dict) and b.get("type") == "text"]
+    assert any("RECOVERY MODE: State the single target file, the exact verification goal, and make exactly one next tool call." in t for t in text_msgs)
+    assert any("RECOVERY MODE: Do not edit yet. In <=5 lines explain the blocker, inspect exactly one relevant file/diff, then either patch the locked target or finish." in t for t in text_msgs)
