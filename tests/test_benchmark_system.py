@@ -227,3 +227,31 @@ def test_hidden_verifier_alias_normalized_to_hidden_verification(tmp_path: Path)
 def test_terminal_001_is_not_inspect_only() -> None:
     task = load_task(Path("benchmark_tasks/villani_bench_v1/terminal_001_python_module_entry"))
     assert task.inspect_only is False
+
+
+def test_bugfix_005_retry_threshold_fixture_matches_seeded_bug() -> None:
+    import json
+
+    task_dir = Path("benchmark_tasks/villani_bench_v1/bugfix_005_retry_threshold")
+    task = load_task(task_dir)
+    assert task.id == "bugfix_005_retry_threshold"
+
+    pyproject = (task_dir / "repo" / "pyproject.toml").read_text(encoding="utf-8")
+    assert "[tool.pytest.ini_options]" in pyproject
+    assert 'pythonpath = ["src"]' in pyproject
+
+    prompt = (task_dir / "prompt.txt").read_text(encoding="utf-8").lower()
+    assert "500" in prompt
+    assert "retry" in prompt
+    assert "400" in prompt
+
+    metadata = json.loads((task_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["name"] == "bugfix_005_retry_threshold"
+    assert "500" in metadata["description"]
+
+
+def test_suite_loads_renamed_bugfix_005_task() -> None:
+    tasks = load_tasks(Path("benchmark_tasks/villani_bench_v1"))
+    task_ids = {task.id for task in tasks}
+    assert "bugfix_005_retry_threshold" in task_ids
+    assert "bugfix_005_cache_key_args" not in task_ids

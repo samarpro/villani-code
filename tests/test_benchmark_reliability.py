@@ -549,3 +549,126 @@ def test_logs_visible_and_hidden_verification_steps(monkeypatch, capsys) -> None
     assert "[benchmark] visible verify [pass] code=0" in out
     assert "[benchmark] running hidden verification commands (1)" in out
     assert "[benchmark] hidden verify [pass] code=0" in out
+
+
+def test_noop_patch_attempt_detection_helper() -> None:
+    assert BenchmarkRunner._is_noop_patch_attempt(file_writes=0, patch_attempts=0, meaningful_changed_files=[]) is True
+    assert BenchmarkRunner._is_noop_patch_attempt(file_writes=None, patch_attempts=None, meaningful_changed_files=[]) is True
+    assert BenchmarkRunner._is_noop_patch_attempt(file_writes=1, patch_attempts=0, meaningful_changed_files=[]) is False
+    assert BenchmarkRunner._is_noop_patch_attempt(file_writes=0, patch_attempts=0, meaningful_changed_files=["src/app.py"]) is False
+
+
+def test_noop_run_is_labeled_benchmark_no_patch_attempt(monkeypatch) -> None:
+    from villani_code.benchmark.models import FailureReason, FairnessClassification
+    from villani_code.benchmark.reporting import load_results
+
+    class FakeRunner:
+        name = "villani"
+        version = "1"
+        capability = "cli_wrapper"
+        telemetry_capability = "coarse_process_only"
+        fairness_classification = FairnessClassification.COARSE_WRAPPER_ONLY
+        fairness_notes = "fake"
+        supports_model_override = True
+
+        def run_agent(self, **kwargs):
+            return AdapterRunResult(
+                stdout="",
+                stderr="",
+                exit_code=0,
+                timeout=False,
+                runtime_seconds=0.1,
+                telemetry_quality=TelemetryQuality.INFERRED,
+                telemetry_field_quality_map={"num_shell_commands": FieldQuality.INFERRED},
+                events=[],
+            )
+
+    monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda agent: FakeRunner())
+    monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda repo: [])
+    monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda repo: (0, 0))
+
+    def _failing_verify(repo, commands, timeout_seconds):
+        return False, [
+            VerificationOutcome(
+                command="pytest -q",
+                passed=False,
+                exit_code=1,
+                stdout="",
+                stderr="assert failed",
+                started_at=1.0,
+                finished_at=2.0,
+            )
+        ], 1.0, 2.0
+
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", _failing_verify)
+
+    runner = BenchmarkRunner(output_dir=Path("artifacts/benchmark-test"))
+    data = runner.run(
+        suite_dir=Path("benchmark_tasks/villani_bench_v1"),
+        task_id="bugfix_001_datetime_cli",
+        agent="villani",
+        model="tiny-model",
+        base_url=None,
+        api_key=None,
+    )
+    row = load_results(Path(data["results_path"]))[0]
+    assert row.success == 0
+    assert row.failure_reason == FailureReason.BENCHMARK_NO_PATCH_ATTEMPT
+
+
+def test_meaningful_patch_attempt_keeps_visible_verification_failed(monkeypatch) -> None:
+    from villani_code.benchmark.models import FailureReason, FairnessClassification
+    from villani_code.benchmark.reporting import load_results
+
+    class FakeRunner:
+        name = "villani"
+        version = "1"
+        capability = "cli_wrapper"
+        telemetry_capability = "coarse_process_only"
+        fairness_classification = FairnessClassification.COARSE_WRAPPER_ONLY
+        fairness_notes = "fake"
+        supports_model_override = True
+
+        def run_agent(self, **kwargs):
+            return AdapterRunResult(
+                stdout="",
+                stderr="",
+                exit_code=0,
+                timeout=False,
+                runtime_seconds=0.1,
+                telemetry_quality=TelemetryQuality.INFERRED,
+                telemetry_field_quality_map={"num_shell_commands": FieldQuality.INFERRED},
+                events=[],
+            )
+
+    monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda agent: FakeRunner())
+    monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda repo: ["src/app/cli.py"])
+    monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda repo: (1, 0))
+
+    def _failing_verify(repo, commands, timeout_seconds):
+        return False, [
+            VerificationOutcome(
+                command="pytest -q",
+                passed=False,
+                exit_code=1,
+                stdout="",
+                stderr="assert failed",
+                started_at=1.0,
+                finished_at=2.0,
+            )
+        ], 1.0, 2.0
+
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", _failing_verify)
+
+    runner = BenchmarkRunner(output_dir=Path("artifacts/benchmark-test"))
+    data = runner.run(
+        suite_dir=Path("benchmark_tasks/villani_bench_v1"),
+        task_id="bugfix_001_datetime_cli",
+        agent="villani",
+        model="tiny-model",
+        base_url=None,
+        api_key=None,
+    )
+    row = load_results(Path(data["results_path"]))[0]
+    assert row.success == 0
+    assert row.failure_reason == FailureReason.VISIBLE_VERIFICATION_FAILED

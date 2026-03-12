@@ -9,7 +9,7 @@
     "src/app/core.py"
   ],
   "primary_skill": "debug",
-  "name": "bugfix_005_cache_key_args",
+  "name": "bugfix_005_retry_threshold",
   "difficulty": "medium",
   "reference_patch_size_lines": 0,
   "runtime_stressors": [
@@ -30,5 +30,6 @@
     "correctness",
     "deterministic_tests"
   ],
-  "benchmark_bucket": "baseline"
+  "benchmark_bucket": "baseline",
+  "description": "Fix retry threshold so should_retry includes HTTP 500 and above while excluding 400-class statuses."
 }
