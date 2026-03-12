@@ -177,11 +177,17 @@ class Runner:
         self._ensure_project_memory_and_plan(instruction)
         self._task_mode = classify_task_mode(instruction)
         diagnosis = None
+        pre_edit_failure_evidence = None
         if self.small_model or self.villani_mode or self.benchmark_config.enabled:
             try:
                 from villani_code import state_runtime
 
-                diagnosis = state_runtime.run_pre_edit_diagnosis(self, instruction)
+                pre_edit_failure_evidence = state_runtime.run_pre_edit_failure_localization(self)
+                diagnosis = state_runtime.run_pre_edit_diagnosis(
+                    self,
+                    instruction,
+                    failure_evidence=pre_edit_failure_evidence,
+                )
             except Exception:
                 diagnosis = None
             if diagnosis:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict
 import subprocess
 import sys
@@ -23,6 +24,167 @@ from villani_code.utils import ensure_dir
 
 
 _DIAGNOSIS_KEYS = ("target_file", "bug_class", "fix_intent")
+
+
+def _normalize_repo_path(value: str) -> str:
+    return str(value or "").replace("\\", "/").lstrip("./")
+
+
+def _single_clear_file(paths: list[str] | None) -> str | None:
+    normalized = []
+    for path in paths or []:
+        item = _normalize_repo_path(path)
+        if item:
+            normalized.append(item)
+    unique = sorted(set(normalized))
+    if len(unique) == 1:
+        return unique[0]
+    return None
+
+
+def _is_broad_visible_verification(command: str) -> bool:
+    cmd = str(command or "").strip()
+    if not cmd:
+        return False
+    lowered = cmd.lower()
+    if "pytest" not in lowered:
+        return False
+    has_py_target = bool(re.search(r"(^|\s)[^\s]+\.py(::[^\s]+)?", cmd))
+    has_filter = " -k " in f" {lowered} "
+    return not has_py_target and not has_filter
+
+
+def _extract_first_path_from_text(text: str) -> str | None:
+    match = re.search(r"([\w./\\-]+\.py)", text)
+    if not match:
+        return None
+    return _normalize_repo_path(match.group(1))
+
+
+def parse_failure_signal(stdout: str, stderr: str) -> dict[str, Any]:
+    combined = "\n".join(part for part in [stdout, stderr] if part)
+    lines = combined.splitlines()
+    evidence: dict[str, Any] = {
+        "first_failing_test": "",
+        "traceback_file": "",
+        "traceback_line": None,
+        "error_summary": "",
+        "raw_failure_excerpt": "",
+    }
+
+    test_match = re.search(r"(^|\s)([\w./-]+::[\w./\[\]-]+)", combined, re.MULTILINE)
+    if test_match:
+        evidence["first_failing_test"] = test_match.group(2)
+    else:
+        fallback = re.search(r"FAILED\s+([^\s]+)", combined)
+        if fallback:
+            evidence["first_failing_test"] = fallback.group(1)
+
+    traceback = re.search(r'File "([^"]+)", line (\d+)', combined)
+    if traceback:
+        evidence["traceback_file"] = _normalize_repo_path(traceback.group(1))
+        evidence["traceback_line"] = int(traceback.group(2))
+    else:
+        path = _extract_first_path_from_text(combined)
+        if path:
+            evidence["traceback_file"] = path
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(("E   ", "AssertionError", "ValueError", "TypeError", "KeyError", "RuntimeError")):
+            evidence["error_summary"] = stripped.removeprefix("E   ").strip()
+            break
+    if not evidence["error_summary"]:
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("FAILED ") or stripped.startswith("ERROR "):
+                evidence["error_summary"] = stripped
+                break
+
+    if lines:
+        evidence["raw_failure_excerpt"] = "\n".join(lines[:40])
+    return evidence
+
+
+def _has_useful_failure_signal(evidence: dict[str, Any] | None) -> bool:
+    if not evidence:
+        return False
+    return any(
+        bool(evidence.get(key))
+        for key in ["first_failing_test", "traceback_file", "traceback_line", "error_summary"]
+    )
+
+
+def run_pre_edit_failure_localization(runner: Any) -> dict[str, Any] | None:
+    cfg = getattr(runner, "benchmark_config", None)
+    visible_commands = list(getattr(cfg, "visible_verification", []) if cfg else [])
+    visible_command = str(visible_commands[0]).strip() if visible_commands else ""
+    expected_file = _single_clear_file(list(getattr(cfg, "expected_files", []) if cfg else []))
+    plan = getattr(runner, "_execution_plan", None)
+    relevant_file = _single_clear_file(list(getattr(plan, "relevant_files", []) if plan else []))
+    has_traceback = bool(getattr(runner, "_pending_verification", "").strip())
+    broad_visible = _is_broad_visible_verification(visible_command)
+    strong_signal = bool(expected_file or relevant_file or has_traceback or not broad_visible)
+
+    if strong_signal or not visible_command:
+        runner.event_callback(
+            {
+                "type": "pre_edit_failure_signal_skipped",
+                "reason": "strong_signal" if strong_signal else "missing_visible_verification",
+                "visible_verification_command": visible_command,
+            }
+        )
+        return None
+
+    runner.event_callback(
+        {
+            "type": "pre_edit_failure_signal_attempted",
+            "visible_verification_command": visible_command,
+        }
+    )
+    try:
+        proc = subprocess.run(
+            ["bash", "-lc", visible_command],
+            cwd=runner.repo,
+            capture_output=True,
+            text=True,
+        )
+    except Exception as exc:  # pragma: no cover - defensive path
+        runner.event_callback(
+            {
+                "type": "pre_edit_failure_signal_skipped",
+                "reason": f"command_error:{exc.__class__.__name__}",
+                "visible_verification_command": visible_command,
+            }
+        )
+        return None
+
+    evidence: dict[str, Any] = {
+        "first_failing_test": "",
+        "traceback_file": "",
+        "traceback_line": None,
+        "error_summary": "",
+        "raw_failure_excerpt": "",
+        "command": visible_command,
+        "exit_code": int(proc.returncode),
+    }
+    if proc.returncode != 0:
+        evidence.update(parse_failure_signal(proc.stdout, proc.stderr))
+
+    runner.event_callback(
+        {
+            "type": "pre_edit_failure_signal_captured",
+            "visible_verification_command": visible_command,
+            "exit_code": int(proc.returncode),
+            "failure_evidence_extracted": _has_useful_failure_signal(evidence),
+            "first_failing_test": evidence.get("first_failing_test", ""),
+            "traceback_file": evidence.get("traceback_file", ""),
+            "error_summary": evidence.get("error_summary", ""),
+        }
+    )
+    return evidence
 
 
 def parse_pre_edit_diagnosis(raw: Any) -> dict[str, str] | None:
@@ -52,7 +214,9 @@ def parse_pre_edit_diagnosis(raw: Any) -> dict[str, str] | None:
     return cleaned
 
 
-def run_pre_edit_diagnosis(runner: Any, instruction: str) -> dict[str, str] | None:
+def run_pre_edit_diagnosis(
+    runner: Any, instruction: str, failure_evidence: dict[str, Any] | None = None
+) -> dict[str, str] | None:
     runner.event_callback({"type": "diagnosis_attempted"})
     evidence_lines = [f"Objective: {instruction.strip()}"]
     plan = getattr(runner, "_execution_plan", None)
@@ -71,6 +235,20 @@ def run_pre_edit_diagnosis(runner: Any, instruction: str) -> dict[str, str] | No
             evidence_lines.append("Visible verification: " + "; ".join(cfg.visible_verification[:3]))
         if cfg.expected_files:
             evidence_lines.append("Expected files: " + ", ".join(cfg.expected_files[:5]))
+    if failure_evidence:
+        if failure_evidence.get("first_failing_test"):
+            evidence_lines.append("First failing test: " + str(failure_evidence["first_failing_test"]))
+        if failure_evidence.get("traceback_file"):
+            file_line = str(failure_evidence["traceback_file"])
+            if failure_evidence.get("traceback_line"):
+                file_line += f":{failure_evidence['traceback_line']}"
+            evidence_lines.append("Traceback location: " + file_line)
+        if failure_evidence.get("error_summary"):
+            evidence_lines.append("Error summary: " + str(failure_evidence["error_summary"]))
+        if failure_evidence.get("raw_failure_excerpt"):
+            excerpt = str(failure_evidence["raw_failure_excerpt"]).strip()
+            if excerpt:
+                evidence_lines.append("Raw failure excerpt:\n" + excerpt[:1200])
 
     system_prompt = (
         "Return strict JSON only with exactly these string keys: "

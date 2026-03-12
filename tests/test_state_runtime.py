@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -245,3 +246,140 @@ def test_inject_diagnosis_hint_prepends_user_context() -> None:
     assert "Likely diagnosis:" in first
     assert "Target file: src/app/config.py" in first
     assert "Treat it as a hint, not ground truth." in first
+
+
+def test_fail_first_localization_runs_without_strong_signal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_repo(tmp_path)
+    events: list[dict] = []
+    runner = SimpleNamespace(
+        repo=tmp_path,
+        benchmark_config=SimpleNamespace(visible_verification=["pytest -q"], expected_files=[]),
+        _execution_plan=SimpleNamespace(relevant_files=[]),
+        _pending_verification="",
+        event_callback=events.append,
+    )
+
+    def fake_run(cmd, **_kwargs):
+        assert cmd == ["bash", "-lc", "pytest -q"]
+
+        class P:
+            returncode = 1
+            stdout = "FAILED tests/test_api.py::test_runtime - AssertionError: boom"
+            stderr = ""
+
+        return P()
+
+    monkeypatch.setattr(state_runtime.subprocess, "run", fake_run)
+    evidence = state_runtime.run_pre_edit_failure_localization(runner)
+
+    assert evidence is not None
+    assert evidence["first_failing_test"] == "tests/test_api.py::test_runtime"
+    assert any(e.get("type") == "pre_edit_failure_signal_attempted" for e in events)
+    assert any(e.get("type") == "pre_edit_failure_signal_captured" for e in events)
+
+
+def test_fail_first_localization_skips_with_clear_expected_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_repo(tmp_path)
+    events: list[dict] = []
+    runner = SimpleNamespace(
+        repo=tmp_path,
+        benchmark_config=SimpleNamespace(
+            visible_verification=["pytest -q"],
+            expected_files=["src/app/core.py"],
+        ),
+        _execution_plan=SimpleNamespace(relevant_files=[]),
+        _pending_verification="",
+        event_callback=events.append,
+    )
+
+    def fake_run(_cmd, **_kwargs):
+        raise AssertionError("verification should be skipped when expected file is clear")
+
+    monkeypatch.setattr(state_runtime.subprocess, "run", fake_run)
+    evidence = state_runtime.run_pre_edit_failure_localization(runner)
+
+    assert evidence is None
+    assert any(e.get("type") == "pre_edit_failure_signal_skipped" for e in events)
+
+
+def test_parse_failure_signal_extracts_test_and_traceback() -> None:
+    output = (
+        "FAILED tests/test_core.py::test_final_page - AssertionError: expected 5\n"
+        'File "src/app/core.py", line 27, in paginate\n'
+        "E   AssertionError: expected 5"
+    )
+    evidence = state_runtime.parse_failure_signal(output, "")
+    assert evidence["first_failing_test"] == "tests/test_core.py::test_final_page"
+    assert evidence["traceback_file"] == "src/app/core.py"
+    assert evidence["traceback_line"] == 27
+    assert "expected 5" in evidence["error_summary"]
+
+
+def test_run_pre_edit_diagnosis_injects_failure_evidence_context() -> None:
+    captured: dict[str, object] = {}
+
+    class Client:
+        def create_message(self, payload, stream):
+            captured["payload"] = payload
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"target_file":"src/app/core.py","bug_class":"logic_error","fix_intent":"Fix pagination terminal condition."}',
+                    }
+                ]
+            }
+
+    events: list[dict] = []
+    runner = SimpleNamespace(
+        model="m",
+        max_tokens=300,
+        client=Client(),
+        event_callback=events.append,
+        benchmark_config=SimpleNamespace(enabled=True, visible_verification=["pytest -q"], expected_files=[]),
+        _execution_plan=SimpleNamespace(validation_steps=["pytest -q"], relevant_files=[]),
+    )
+    diagnosis = state_runtime.run_pre_edit_diagnosis(
+        runner,
+        "fix bug",
+        failure_evidence={
+            "first_failing_test": "tests/test_core.py::test_final_page",
+            "traceback_file": "src/app/core.py",
+            "traceback_line": 27,
+            "error_summary": "AssertionError: expected 5",
+            "raw_failure_excerpt": "FAILED tests/test_core.py::test_final_page",
+        },
+    )
+    prompt_text = captured["payload"]["messages"][0]["content"][0]["text"]
+    assert "First failing test: tests/test_core.py::test_final_page" in prompt_text
+    assert "Traceback location: src/app/core.py:27" in prompt_text
+    assert "Error summary: AssertionError: expected 5" in prompt_text
+    assert diagnosis is not None
+
+
+def test_fail_first_localization_handles_unparseable_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_repo(tmp_path)
+    events: list[dict] = []
+    runner = SimpleNamespace(
+        repo=tmp_path,
+        benchmark_config=SimpleNamespace(visible_verification=["pytest -q"], expected_files=[]),
+        _execution_plan=SimpleNamespace(relevant_files=[]),
+        _pending_verification="",
+        event_callback=events.append,
+    )
+
+    def fake_run(_cmd, **_kwargs):
+        class P:
+            returncode = 1
+            stdout = ""
+            stderr = ""
+
+        return P()
+
+    monkeypatch.setattr(state_runtime.subprocess, "run", fake_run)
+    evidence = state_runtime.run_pre_edit_failure_localization(runner)
+
+    assert evidence is not None
+    assert evidence["first_failing_test"] == ""
+    assert evidence["traceback_file"] == ""
+    assert any(e.get("type") == "pre_edit_failure_signal_captured" for e in events)
