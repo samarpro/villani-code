@@ -20,6 +20,7 @@ from villani_code.benchmark.models import (
     ReproducibilityManifest,
     TaskFamily,
     TelemetryQuality,
+    VerificationOutcome,
 )
 from villani_code.benchmark.policy import (
     PATH_CLASS_CLEARLY_UNRELATED,
@@ -42,6 +43,35 @@ class BenchmarkRunner:
     @staticmethod
     def _log(message: str) -> None:
         print(f"[benchmark] {message}")
+
+    @classmethod
+    def _log_verification_outcomes(cls, stage: str, outcomes: list[VerificationOutcome]) -> None:
+        if not outcomes:
+            cls._log(f"{stage} verification had no commands")
+            return
+        for outcome in outcomes:
+            runtime = outcome.finished_at - outcome.started_at
+            status = "pass" if outcome.passed else "fail"
+            detail = ""
+            if not outcome.passed and outcome.stderr:
+                detail = f" stderr={cls._stderr_snippet(outcome.stderr, max_len=180)}"
+            cls._log(
+                f"{stage} verify [{status}] code={outcome.exit_code} runtime={runtime:.2f}s cmd={outcome.command}{detail}"
+            )
+
+    @classmethod
+    def _log_event_metrics_summary(cls, metrics: dict[str, object]) -> None:
+        cls._log(
+            "agent telemetry "
+            f"commands={metrics.get('num_shell_commands') or 0} "
+            f"failed_commands={metrics.get('num_failed_commands') or 0} "
+            f"tool_calls={metrics.get('tool_calls_total') or 0} "
+            f"file_reads={metrics.get('file_reads') or 0} "
+            f"file_writes={metrics.get('file_writes') or 0} "
+            f"patches={metrics.get('patch_attempts') or 0} "
+            f"test_runs={metrics.get('test_runs') or 0} "
+            f"turns={metrics.get('number_of_turns') or 0}"
+        )
 
     def list_tasks(self, suite_dir: Path, include_private: bool = False, **filters: str | None) -> list[BenchmarkTask]:
         tasks = load_tasks(suite_dir, **filters)
@@ -334,6 +364,7 @@ class BenchmarkRunner:
                     self._log(f"agent crash: {agent_stderr_preview or 'no stderr preview available'}")
 
                 metrics = self._event_metrics(execution.events, started, task.metadata.expected_files, task.visible_verification, task.hidden_verification)
+                self._log_event_metrics_summary(metrics)
                 if field_quality_map.get("num_shell_commands") in {FieldQuality.EXACT, FieldQuality.INFERRED}:
                     num_shell_commands = metrics["num_shell_commands"]
                     num_failed_commands = metrics["num_failed_commands"]
@@ -350,7 +381,9 @@ class BenchmarkRunner:
                     retries_after_failure = metrics["retries_after_failure"]
 
                 if error is None:
+                    self._log(f"running visible verification commands ({len(task.visible_verification)})")
                     visible_pass, visible_outcomes, first_verify, l_verify = run_commands(workspace_repo, task.visible_verification, timeout_seconds)
+                    self._log_verification_outcomes("visible", visible_outcomes)
                     if first_verify:
                         time_to_first_verify = first_verify - started
                     last_verify = (l_verify - started) if l_verify else None
@@ -359,12 +392,16 @@ class BenchmarkRunner:
                         failure_reason = FailureReason.VISIBLE_VERIFICATION_FAILED
 
                     if task.family == TaskFamily.REPRO_TEST:
+                        self._log("running hidden repro validation")
                         hidden_pass, invalid_repro = self._run_repro_hidden(task, workspace_repo, timeout_seconds)
+                        self._log(f"hidden repro validation result pass={int(hidden_pass)} invalid_repro={int(invalid_repro)}")
                         if not hidden_pass:
                             failure_reason = FailureReason.INVALID_REPRO_TEST if invalid_repro else FailureReason.HIDDEN_VERIFICATION_FAILED
                     else:
                         hidden_commands = task.hidden_verification
+                        self._log(f"running hidden verification commands ({len(hidden_commands)})")
                         hidden_pass, hidden_outcomes, _, l_verify_hidden = run_commands(workspace_repo, hidden_commands, timeout_seconds)
+                        self._log_verification_outcomes("hidden", hidden_outcomes)
                         verifications.extend(item.command for item in hidden_outcomes)
                         if l_verify_hidden:
                             last_verify = l_verify_hidden - started
@@ -613,7 +650,9 @@ class BenchmarkRunner:
             shutil.copytree(workspace_tests, fixed_tests, ignore=self._copytree_ignore_runtime)
 
         broken_pass, broken_outcomes, _, _ = run_commands(workspace_repo, task.hidden_verification, timeout_seconds)
+        self._log_verification_outcomes("hidden(repro-broken)", broken_outcomes)
         fixed_pass, fixed_outcomes, _, _ = run_commands(temp_root, task.hidden_verification, timeout_seconds)
+        self._log_verification_outcomes("hidden(repro-fixed)", fixed_outcomes)
         all_output = "\n".join(o.stdout + o.stderr for o in broken_outcomes + fixed_outcomes)
         syntax_noise = any(token in all_output for token in ["SyntaxError", "ImportError", "ModuleNotFoundError"])
         meaningful = any("assert" in (o.stdout + o.stderr).lower() or "failed" in (o.stdout + o.stderr).lower() for o in broken_outcomes)
