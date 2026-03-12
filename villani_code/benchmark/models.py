@@ -47,6 +47,7 @@ class FailureReason(str, Enum):
     MISSING_ARTIFACT = "missing_artifact"
     AGENT_CRASH = "agent_crash"
     VERIFIER_CRASH = "verifier_crash"
+    VERIFICATION_COMMAND_FAILED_TO_LAUNCH = "verification_command_failed_to_launch"
     INVALID_REPRO_TEST = "invalid_repro_test"
     BENCHMARK_ERROR = "benchmark_error"
     NO_PROGRESS = "no_progress"

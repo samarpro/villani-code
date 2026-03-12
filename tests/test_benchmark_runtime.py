@@ -387,9 +387,9 @@ def test_visible_only_and_hidden_verifier_scoring(tmp_path: Path, monkeypatch) -
 
     calls = {"n": 0}
 
-    def fake_run_commands(_repo, _cmds, _timeout=None, timeout_seconds=None):
+    def fake_run_commands(_repo, _cmds, _timeout=None, timeout_seconds=None, **_kwargs):
         calls["n"] += 1
-        return (True, [], 1.0, 2.0) if calls["n"] == 1 else (False, [], 2.0, 3.0)
+        return (True, [], 1.0, 2.0, False) if calls["n"] == 1 else (False, [], 2.0, 3.0, False)
 
     monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda _agent: FakeAgent())
     monkeypatch.setattr("villani_code.benchmark.runner.run_commands", fake_run_commands)
@@ -420,7 +420,7 @@ def test_inspect_only_forbidden_unrelated_and_recovery_fields(tmp_path: Path, mo
             return AdapterRunResult(stdout="", stderr="", exit_code=0, timeout=False, runtime_seconds=0.01, telemetry_quality=TelemetryQuality.INFERRED, telemetry_field_quality_map={"num_shell_commands": FieldQuality.INFERRED}, events=[])
 
     monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda _agent: FakeAgent())
-    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda _repo, _cmds, _timeout: (True, [], 1.0, 2.0))
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda _repo, _cmds, _timeout, **_kwargs: (True, [], 1.0, 2.0, False))
     monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda _repo: ["docs/readme.md"])
     monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda _repo: (1, 0))
 
@@ -451,7 +451,7 @@ def test_inspect_only_uses_dedicated_failure_reason(tmp_path: Path, monkeypatch)
             return AdapterRunResult(stdout="", stderr="", exit_code=0, timeout=False, runtime_seconds=0.01, telemetry_quality=TelemetryQuality.INFERRED, telemetry_field_quality_map={"num_shell_commands": FieldQuality.INFERRED}, events=[])
 
     monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda _agent: FakeAgent())
-    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda _repo, _cmds, _timeout: (True, [], 1.0, 2.0))
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda _repo, _cmds, _timeout, **_kwargs: (True, [], 1.0, 2.0, False))
     monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda _repo: ["src/app.py"])
     monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda _repo: (1, 0))
 
@@ -522,3 +522,61 @@ def test_benchmark_runtime_uses_diagnosis_step_without_new_flags(tmp_path: Path)
     out = runner.run("fix benchmark bug")
     assert out["execution"]["terminated_reason"] in {"benchmark_incomplete_no_patch", "completed"}
     assert client.calls >= 2
+
+
+def test_launch_failure_maps_to_verification_command_failed_to_launch(tmp_path: Path, monkeypatch) -> None:
+    from villani_code.benchmark.adapters.base import AdapterRunResult
+    from villani_code.benchmark.models import FailureReason, FairnessClassification, FieldQuality, TelemetryQuality, VerificationOutcome
+
+    class FakeAgent:
+        name = "villani"
+        version = "1"
+        capability = "x"
+        telemetry_capability = "x"
+        fairness_classification = FairnessClassification.EXACT_COMPARABLE
+        fairness_notes = "x"
+        supports_model_override = True
+
+        def run_agent(self, **kwargs):
+            return AdapterRunResult(stdout="", stderr="", exit_code=0, timeout=False, runtime_seconds=0.01, telemetry_quality=TelemetryQuality.INFERRED, telemetry_field_quality_map={"num_shell_commands": FieldQuality.INFERRED}, events=[])
+
+    def _launch_fail(_repo, _cmds, _timeout=None, timeout_seconds=None, **_kwargs):
+        return False, [VerificationOutcome(command="pytest -q", passed=False, exit_code=None, stdout="", stderr="[launch-error]", started_at=1.0, finished_at=2.0)], 1.0, 2.0, True
+
+    monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda _agent: FakeAgent())
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", _launch_fail)
+    monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda _repo: ["src/app.py"])
+    monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda _repo: (1, 0))
+
+    task = _minimal_task(tmp_path)
+    row = BenchmarkRunner(output_dir=tmp_path / "out")._run_task(task, agent="villani", model="m", base_url=None, api_key=None, provider=None)
+    assert row.failure_reason == FailureReason.VERIFICATION_COMMAND_FAILED_TO_LAUNCH
+
+
+def test_test_failure_stays_visible_verification_failed(tmp_path: Path, monkeypatch) -> None:
+    from villani_code.benchmark.adapters.base import AdapterRunResult
+    from villani_code.benchmark.models import FailureReason, FairnessClassification, FieldQuality, TelemetryQuality, VerificationOutcome
+
+    class FakeAgent:
+        name = "villani"
+        version = "1"
+        capability = "x"
+        telemetry_capability = "x"
+        fairness_classification = FairnessClassification.EXACT_COMPARABLE
+        fairness_notes = "x"
+        supports_model_override = True
+
+        def run_agent(self, **kwargs):
+            return AdapterRunResult(stdout="", stderr="", exit_code=0, timeout=False, runtime_seconds=0.01, telemetry_quality=TelemetryQuality.INFERRED, telemetry_field_quality_map={"num_shell_commands": FieldQuality.INFERRED}, events=[])
+
+    def _verify_fail(_repo, _cmds, _timeout=None, timeout_seconds=None, **_kwargs):
+        return False, [VerificationOutcome(command="pytest -q", passed=False, exit_code=1, stdout="", stderr="assert failed", started_at=1.0, finished_at=2.0)], 1.0, 2.0, False
+
+    monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda _agent: FakeAgent())
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", _verify_fail)
+    monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda _repo: ["src/app.py"])
+    monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda _repo: (1, 0))
+
+    task = _minimal_task(tmp_path)
+    row = BenchmarkRunner(output_dir=tmp_path / "out")._run_task(task, agent="villani", model="m", base_url=None, api_key=None, provider=None)
+    assert row.failure_reason == FailureReason.VISIBLE_VERIFICATION_FAILED

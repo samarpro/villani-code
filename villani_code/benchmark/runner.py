@@ -424,14 +424,24 @@ class BenchmarkRunner:
 
                 if error is None:
                     self._log(f"running visible verification commands ({len(task.visible_verification)})")
-                    visible_pass, visible_outcomes, first_verify, l_verify = run_commands(workspace_repo, task.visible_verification, timeout_seconds)
+                    visible_pass, visible_outcomes, first_verify, l_verify, visible_launch_failed = run_commands(
+                        workspace_repo,
+                        task.visible_verification,
+                        timeout_seconds,
+                        stage="visible",
+                        logger=self._log,
+                    )
                     self._log_verification_outcomes("visible", visible_outcomes)
                     if first_verify:
                         time_to_first_verify = first_verify - started
                     last_verify = (l_verify - started) if l_verify else None
                     verifications.extend(item.command for item in visible_outcomes)
                     if not visible_pass:
-                        failure_reason = FailureReason.VISIBLE_VERIFICATION_FAILED
+                        failure_reason = (
+                            FailureReason.VERIFICATION_COMMAND_FAILED_TO_LAUNCH
+                            if visible_launch_failed
+                            else FailureReason.VISIBLE_VERIFICATION_FAILED
+                        )
 
                     if task.family == TaskFamily.REPRO_TEST:
                         self._log("running hidden repro validation")
@@ -442,13 +452,23 @@ class BenchmarkRunner:
                     else:
                         hidden_commands = task.hidden_verification
                         self._log(f"running hidden verification commands ({len(hidden_commands)})")
-                        hidden_pass, hidden_outcomes, _, l_verify_hidden = run_commands(workspace_repo, hidden_commands, timeout_seconds)
+                        hidden_pass, hidden_outcomes, _, l_verify_hidden, hidden_launch_failed = run_commands(
+                            workspace_repo,
+                            hidden_commands,
+                            timeout_seconds,
+                            stage="hidden",
+                            logger=self._log,
+                        )
                         self._log_verification_outcomes("hidden", hidden_outcomes)
                         verifications.extend(item.command for item in hidden_outcomes)
                         if l_verify_hidden:
                             last_verify = l_verify_hidden - started
                         if visible_pass and not hidden_pass and failure_reason is None:
-                            failure_reason = FailureReason.HIDDEN_VERIFICATION_FAILED
+                            failure_reason = (
+                                FailureReason.VERIFICATION_COMMAND_FAILED_TO_LAUNCH
+                                if hidden_launch_failed
+                                else FailureReason.HIDDEN_VERIFICATION_FAILED
+                            )
             except Exception as exc:  # noqa: BLE001
                 error = str(exc)
                 failure_reason = FailureReason.BENCHMARK_ERROR
@@ -705,9 +725,9 @@ class BenchmarkRunner:
         if workspace_tests.exists():
             shutil.copytree(workspace_tests, fixed_tests, ignore=self._copytree_ignore_runtime)
 
-        broken_pass, broken_outcomes, _, _ = run_commands(workspace_repo, task.hidden_verification, timeout_seconds)
+        broken_pass, broken_outcomes, _, _, _ = run_commands(workspace_repo, task.hidden_verification, timeout_seconds, stage="hidden(repro-broken)", logger=self._log)
         self._log_verification_outcomes("hidden(repro-broken)", broken_outcomes)
-        fixed_pass, fixed_outcomes, _, _ = run_commands(temp_root, task.hidden_verification, timeout_seconds)
+        fixed_pass, fixed_outcomes, _, _, _ = run_commands(temp_root, task.hidden_verification, timeout_seconds, stage="hidden(repro-fixed)", logger=self._log)
         self._log_verification_outcomes("hidden(repro-fixed)", fixed_outcomes)
         all_output = "\n".join(o.stdout + o.stderr for o in broken_outcomes + fixed_outcomes)
         syntax_noise = any(token in all_output for token in ["SyntaxError", "ImportError", "ModuleNotFoundError"])

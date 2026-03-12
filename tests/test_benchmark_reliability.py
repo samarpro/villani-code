@@ -79,7 +79,7 @@ def test_logging_and_stderr_preview_and_filtered_policy(monkeypatch, capsys) -> 
     monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda repo: (1, 0))
     monkeypatch.setattr(
         "villani_code.benchmark.runner.run_commands",
-        lambda repo, commands, timeout_seconds: (
+        lambda repo, commands, timeout_seconds, **_kwargs: (
             True,
             [
                 VerificationOutcome(
@@ -94,6 +94,7 @@ def test_logging_and_stderr_preview_and_filtered_policy(monkeypatch, capsys) -> 
             ],
             1.0,
             2.0,
+            False,
         ),
     )
 
@@ -171,7 +172,7 @@ def test_missing_artifact_logging_includes_detail(monkeypatch, capsys) -> None:
     monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda agent: FakeRunner())
     monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda repo: [])
     monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda repo: (0, 0))
-    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds: (True, [], 1.0, 2.0))
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds, **_kwargs: (True, [], 1.0, 2.0, False))
 
     runner = BenchmarkRunner(output_dir=Path("artifacts/benchmark-test"))
     data = runner.run(
@@ -223,7 +224,7 @@ def test_solved_task_with_support_file_edit_is_allowed_with_warning(monkeypatch,
     monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda agent: FakeRunner())
     monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda repo: ["app/cli/__main__.py", "Makefile", ".villani_code/state.json"])
     monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda repo: (2, 0))
-    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds: (True, [], 1.0, 2.0))
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds, **_kwargs: (True, [], 1.0, 2.0, False))
 
     runner = BenchmarkRunner(output_dir=Path("artifacts/benchmark-test"))
     data = runner.run(
@@ -276,7 +277,7 @@ def test_solved_task_with_unrelated_edit_still_fails_forbidden_with_detail(monke
     monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda agent: FakeRunner())
     monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda repo: ["app/__main__.py", "tests/test_basic.py", "README.md"])
     monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda repo: (3, 0))
-    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds: (True, [], 1.0, 2.0))
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds, **_kwargs: (True, [], 1.0, 2.0, False))
 
     runner = BenchmarkRunner(output_dir=Path("artifacts/benchmark-test"))
     data = runner.run(
@@ -345,7 +346,7 @@ def test_solved_task_with_metadata_omission_edit_is_allowed_with_warning(monkeyp
     monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda agent: FakeRunner())
     monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda repo: ["src/app/a.py", "src/app/aliases.py", ".villani_code/state.json"])
     monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda repo: (2, 0))
-    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds: (True, [], 1.0, 2.0))
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds, **_kwargs: (True, [], 1.0, 2.0, False))
 
     runner = BenchmarkRunner(output_dir=Path("artifacts/benchmark-test"))
     data = runner.run(
@@ -411,7 +412,7 @@ def test_solved_task_with_expected_file_outside_allowlist_still_succeeds(monkeyp
     monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda agent: FakeRunner())
     monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda repo: ["app/__main__.py", "pyproject.toml"])
     monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda repo: (2, 0))
-    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds: (True, [], 1.0, 2.0))
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds, **_kwargs: (True, [], 1.0, 2.0, False))
 
     runner = BenchmarkRunner(output_dir=Path("artifacts/benchmark-test"))
     data = runner.run(
@@ -476,7 +477,7 @@ def test_metadata_omission_is_warning_not_failure_for_solved_task(monkeypatch) -
     monkeypatch.setattr("villani_code.benchmark.runner.build_agent_runner", lambda agent: FakeRunner())
     monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda repo: ["src/app/a.py", "src/app/extra.py"])
     monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda repo: (2, 0))
-    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds: (True, [], 1.0, 2.0))
+    monkeypatch.setattr("villani_code.benchmark.runner.run_commands", lambda repo, commands, timeout_seconds, **_kwargs: (True, [], 1.0, 2.0, False))
 
     runner = BenchmarkRunner(output_dir=Path("artifacts/benchmark-test"))
     data = runner.run(
@@ -526,11 +527,11 @@ def test_logs_visible_and_hidden_verification_steps(monkeypatch, capsys) -> None
 
     calls = {"count": 0}
 
-    def fake_run_commands(repo, commands, timeout_seconds):
+    def fake_run_commands(repo, commands, timeout_seconds, **_kwargs):
         calls["count"] += 1
         if calls["count"] == 1:
-            return True, [VerificationOutcome(command="pytest -q tests/test_cli_datetime.py", passed=True, exit_code=0, stdout="", stderr="", started_at=1.0, finished_at=2.0)], 1.0, 2.0
-        return True, [VerificationOutcome(command="pytest -q tests/test_cli_datetime.py", passed=True, exit_code=0, stdout="", stderr="", started_at=2.5, finished_at=3.0)], 2.5, 3.0
+            return True, [VerificationOutcome(command="pytest -q tests/test_cli_datetime.py", passed=True, exit_code=0, stdout="", stderr="", started_at=1.0, finished_at=2.0)], 1.0, 2.0, False
+        return True, [VerificationOutcome(command="pytest -q tests/test_cli_datetime.py", passed=True, exit_code=0, stdout="", stderr="", started_at=2.5, finished_at=3.0)], 2.5, 3.0, False
 
     monkeypatch.setattr("villani_code.benchmark.runner.run_commands", fake_run_commands)
 
@@ -587,7 +588,7 @@ def test_noop_run_is_labeled_benchmark_no_patch_attempt(monkeypatch) -> None:
     monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda repo: [])
     monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda repo: (0, 0))
 
-    def _failing_verify(repo, commands, timeout_seconds):
+    def _failing_verify(repo, commands, timeout_seconds, **_kwargs):
         return False, [
             VerificationOutcome(
                 command="pytest -q",
@@ -598,7 +599,7 @@ def test_noop_run_is_labeled_benchmark_no_patch_attempt(monkeypatch) -> None:
                 started_at=1.0,
                 finished_at=2.0,
             )
-        ], 1.0, 2.0
+        ], 1.0, 2.0, False
 
     monkeypatch.setattr("villani_code.benchmark.runner.run_commands", _failing_verify)
 
@@ -645,7 +646,7 @@ def test_meaningful_patch_attempt_keeps_visible_verification_failed(monkeypatch)
     monkeypatch.setattr("villani_code.benchmark.runner.list_touched_files", lambda repo: ["src/app/cli.py"])
     monkeypatch.setattr("villani_code.benchmark.runner.line_stats", lambda repo: (1, 0))
 
-    def _failing_verify(repo, commands, timeout_seconds):
+    def _failing_verify(repo, commands, timeout_seconds, **_kwargs):
         return False, [
             VerificationOutcome(
                 command="pytest -q",
@@ -656,7 +657,7 @@ def test_meaningful_patch_attempt_keeps_visible_verification_failed(monkeypatch)
                 started_at=1.0,
                 finished_at=2.0,
             )
-        ], 1.0, 2.0
+        ], 1.0, 2.0, False
 
     monkeypatch.setattr("villani_code.benchmark.runner.run_commands", _failing_verify)
 
