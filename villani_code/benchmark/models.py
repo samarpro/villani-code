@@ -50,6 +50,7 @@ class FailureReason(str, Enum):
     INVALID_REPRO_TEST = "invalid_repro_test"
     BENCHMARK_ERROR = "benchmark_error"
     NO_PROGRESS = "no_progress"
+    BENCHMARK_NO_PATCH_ATTEMPT = "benchmark_no_patch_attempt"
     ENVIRONMENT_FAILURE = "environment_failure"
 
 

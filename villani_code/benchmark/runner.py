@@ -26,6 +26,7 @@ from villani_code.benchmark.policy import (
     PATH_CLASS_CLEARLY_UNRELATED,
     benchmark_asset_integrity,
     enforce_path_policy,
+    filter_meaningful_touched_paths,
 )
 from villani_code.benchmark.reporting import render_summary_table, summarize, write_markdown_report, write_results
 from villani_code.benchmark.runtime_config import benchmark_runtime_config_from_task
@@ -72,6 +73,30 @@ class BenchmarkRunner:
             f"test_runs={metrics.get('test_runs') or 0} "
             f"turns={metrics.get('number_of_turns') or 0}"
         )
+
+    @staticmethod
+    def _extract_termination_reason(events: list[object]) -> str | None:
+        for event in reversed(events):
+            payload = getattr(event, "payload", {})
+            if not isinstance(payload, dict):
+                continue
+            reason = payload.get("termination_reason") or payload.get("terminated_reason") or payload.get("stop_reason")
+            if isinstance(reason, str) and reason.strip():
+                return reason.strip()
+        return None
+
+    @staticmethod
+    def _collect_meaningful_repo_changes(repo_path: Path) -> list[str]:
+        return filter_meaningful_touched_paths(list_touched_files(repo_path))
+
+    @staticmethod
+    def _is_noop_patch_attempt(
+        *,
+        file_writes: int | None,
+        patch_attempts: int | None,
+        meaningful_changed_files: list[str],
+    ) -> bool:
+        return (file_writes or 0) == 0 and (patch_attempts or 0) == 0 and len(meaningful_changed_files) == 0
 
     def list_tasks(self, suite_dir: Path, include_private: bool = False, **filters: str | None) -> list[BenchmarkTask]:
         tasks = load_tasks(suite_dir, **filters)
@@ -380,6 +405,23 @@ class BenchmarkRunner:
                     test_runs = metrics["test_runs"]
                     retries_after_failure = metrics["retries_after_failure"]
 
+                post_run_changes = self._collect_meaningful_repo_changes(workspace_repo)
+                changed_files_for_log = post_run_changes
+                termination_reason = self._extract_termination_reason(execution.events)
+                noop_candidate = self._is_noop_patch_attempt(
+                    file_writes=metrics["file_writes"],
+                    patch_attempts=metrics["patch_attempts"],
+                    meaningful_changed_files=post_run_changes,
+                )
+                self._log(f"termination_reason={termination_reason or 'unknown'}")
+                if changed_files_for_log:
+                    self._log(f"meaningful_repo_changes=yes changed_files={', '.join(changed_files_for_log)}")
+                else:
+                    self._log("meaningful_repo_changes=no changed_files=none")
+                self._log(f"no_op_candidate={int(noop_candidate)}")
+                if noop_candidate:
+                    self._log("no-op detected: no meaningful patch attempt")
+
                 if error is None:
                     self._log(f"running visible verification commands ({len(task.visible_verification)})")
                     visible_pass, visible_outcomes, first_verify, l_verify = run_commands(workspace_repo, task.visible_verification, timeout_seconds)
@@ -462,6 +504,20 @@ class BenchmarkRunner:
                 failure_reason = FailureReason.MISSING_ARTIFACT
                 if artifact_failure_detail:
                     error = artifact_failure_detail
+
+            no_op_patch_attempt = self._is_noop_patch_attempt(
+                file_writes=file_writes,
+                patch_attempts=patch_attempts,
+                meaningful_changed_files=touched,
+            )
+            if (
+                no_op_patch_attempt
+                and not timeout
+                and not error
+                and not policy_result.violating_paths
+                and failure_reason in {None, FailureReason.VISIBLE_VERIFICATION_FAILED, FailureReason.HIDDEN_VERIFICATION_FAILED, FailureReason.MISSING_ARTIFACT}
+            ):
+                failure_reason = FailureReason.BENCHMARK_NO_PATCH_ATTEMPT
 
             policy_repo_clean_ok = policy_result.allowlist_ok and policy_result.forbidden_ok
             if solved_checks_passed and not policy_result.violating_paths:
