@@ -5,7 +5,7 @@ import pytest
 
 pytest.importorskip("textual")
 
-from textual.widgets import Input
+from textual.widgets import Input, Static
 from textual.css.query import NoMatches
 from textual.widgets import Log
 
@@ -60,6 +60,32 @@ def test_ai_stream_starts_on_fresh_line(tmp_path: Path) -> None:
             assert "> hihello" not in rendered
             assert "\nhello world" in rendered
             assert rendered.count("hello world") == 1
+
+    asyncio.run(run())
+
+
+def test_transcript_preserves_markup_like_stream_text_literal(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = VillaniTUI(DummyRunner(), tmp_path)
+        chunks = [
+            "[0] hello",
+            "short tests/ covering all",
+            "[bold]not markup[/bold]",
+            "literal [broken markup",
+        ]
+
+        async with app.run_test() as pilot:
+            for chunk in chunks:
+                app.post_message(LogAppend(chunk, kind="stream"))
+            await pilot.pause()
+
+            transcript = app.query_one(VillaniTranscript)
+            expected = "\n" + "".join(chunks)
+            assert transcript.plain_text.endswith(expected)
+            assert app._log_plain_text.endswith(expected)
+
+            rendered = app.query_one("#log-content", Static).renderable
+            assert rendered.plain == transcript.plain_text
 
     asyncio.run(run())
 

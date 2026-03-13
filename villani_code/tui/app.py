@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -30,7 +31,7 @@ class VillaniTranscript(VerticalScroll):
         self._content_text = ""
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="log-content")
+        yield Static(Text(""), id="log-content", markup=False)
 
     @property
     def plain_text(self) -> str:
@@ -46,7 +47,7 @@ class VillaniTranscript(VerticalScroll):
 
     def append_text(self, text: str, follow_tail: bool) -> None:
         self._content_text += text
-        self.query_one("#log-content", Static).update(self._content_text)
+        self.query_one("#log-content", Static).update(Text(self._content_text))
         if follow_tail:
             self.scroll_end(animate=False)
 
