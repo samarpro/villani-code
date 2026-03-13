@@ -107,3 +107,26 @@ def test_always_scope_does_not_auto_approve_unrelated_categories() -> None:
     app.messages.clear()
     assert _request_with_choice(controller, app, "Write", {"file_path": "a.txt"}, "no") is False
     assert any(m.__class__.__name__ == "ApprovalRequest" for m in app.messages)
+
+
+class StreamRunner:
+    print_stream = False
+    approval_callback = None
+    event_callback = None
+    permissions = None
+
+
+def test_stream_text_is_suppressed_during_plan_mode() -> None:
+    app = DummyApp()
+    controller = RunnerController(StreamRunner(), app)
+    controller._suppress_assistant_stream_text = True
+    controller.on_runner_event({"type": "stream_text", "text": "raw planning json"})
+    assert not any(isinstance(m, LogAppend) and m.kind == "stream" for m in app.messages)
+
+
+def test_stream_text_still_renders_outside_plan_mode() -> None:
+    app = DummyApp()
+    controller = RunnerController(StreamRunner(), app)
+    controller._suppress_assistant_stream_text = False
+    controller.on_runner_event({"type": "stream_text", "text": "normal output"})
+    assert any(isinstance(m, LogAppend) and m.kind == "stream" and "normal output" in m.text for m in app.messages)

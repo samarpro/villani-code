@@ -25,6 +25,28 @@ from villani_code.tui.widgets.slash_popup import SlashCommandPopup
 from villani_code.tui.widgets.status import StatusBarWidget
 
 
+def _render_plan_lines(result: PlanSessionResult) -> list[str]:
+    lines: list[str] = [
+        "Plan:",
+        f"- Objective: {result.task_summary}",
+        f"- Risk level: {result.risk_level}",
+        f"- Confidence: {result.confidence_score:.2f}",
+    ]
+
+    if result.candidate_files:
+        lines.append("- Files to inspect/update:")
+        lines.extend(f"  - {path}" for path in result.candidate_files)
+
+    if result.recommended_steps:
+        lines.append("- Implementation steps:")
+        lines.extend(f"  - {step}" for step in result.recommended_steps)
+
+    if result.assumptions:
+        lines.append("- Assumptions, risks, and validation:")
+        lines.extend(f"  - {item}" for item in result.assumptions)
+
+    return lines
+
 class VillaniTranscript(VerticalScroll):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -143,18 +165,7 @@ class VillaniTUI(App[None]):
             self.question_cursor = 0
         if result.ready_to_execute:
             self.last_ready_plan = result
-        plan_lines = [
-            "Plan summary:",
-            f"- task: {result.task_summary}",
-            f"- risk: {result.risk_level}",
-            f"- confidence: {result.confidence_score:.2f}",
-            "- candidate files: " + (", ".join(result.candidate_files) if result.candidate_files else "none"),
-            "- steps:",
-            *[f"  - {step}" for step in result.recommended_steps],
-            "- assumptions:",
-            *[f"  - {item}" for item in result.assumptions],
-        ]
-        self._log_local_meta("\n".join(plan_lines))
+        self._log_local_meta("\n".join(_render_plan_lines(result)))
         self._show_current_question_or_finalize()
         self.query_one(StatusBarWidget).set_plan_mode(bool(result.open_questions))
 
