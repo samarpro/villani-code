@@ -29,6 +29,7 @@ class RunnerController:
         self._approval_waiters: dict[str, ApprovalWaiter] = {}
         self._approval_scopes: set[str] = set()
         self._assistant_stream_saw_text = False
+        self._suppress_assistant_stream_text = False
 
         self.runner.print_stream = False
         self.runner.approval_callback = self.request_approval
@@ -95,7 +96,12 @@ class RunnerController:
         self.app.post_message(LogAppend(f"> {text}", kind="user"))
         self.app.post_message(SpinnerState(True, None))
         self.app.post_message(StatusUpdate("Planning"))
-        result = self.runner.plan(text)
+        self._assistant_stream_saw_text = False
+        self._suppress_assistant_stream_text = True
+        try:
+            result = self.runner.plan(text)
+        finally:
+            self._suppress_assistant_stream_text = False
         self._ui_call(self.app.apply_plan_result, result, True)
         self.app.post_message(SpinnerState(False, None))
         self.app.post_message(StatusUpdate("Plan ready" if result.ready_to_execute else "Plan awaiting clarification"))
@@ -112,7 +118,12 @@ class RunnerController:
         self.app.post_message(SpinnerState(True, None))
         self.app.post_message(StatusUpdate("Planning"))
         answers = self._ui_call(self.app.get_plan_answers)
-        result = self.runner.plan(instruction, answers=answers)
+        self._assistant_stream_saw_text = False
+        self._suppress_assistant_stream_text = True
+        try:
+            result = self.runner.plan(instruction, answers=answers)
+        finally:
+            self._suppress_assistant_stream_text = False
         self._ui_call(self.app.apply_plan_result, result, False)
         self.app.post_message(SpinnerState(False, None))
         label = "Replanned" if not auto else "Plan updated"
@@ -275,5 +286,7 @@ class RunnerController:
             return
         if etype == "stream_text":
             self._assistant_stream_saw_text = True
+            if self._suppress_assistant_stream_text:
+                return
             self.app.post_message(LogAppend(str(event.get("text", "")), kind="stream"))
             return

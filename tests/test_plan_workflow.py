@@ -528,3 +528,44 @@ def test_runner_plan_inspects_real_repo_files_not_only_repo_map(tmp_path: Path, 
     monkeypatch.setattr("villani_code.state._collect_planning_evidence", fake_collect)
     runner.plan("Find ways to improve this repo")
     assert touched
+
+
+def test_apply_plan_result_renders_plain_english_without_raw_json(tmp_path: Path) -> None:
+    app = VillaniTUI(DummyRunnerForApp(), tmp_path)
+    result = PlanSessionResult(
+        instruction="task",
+        task_summary="Fix planning output pipeline",
+        candidate_files=["villani_code/state.py", "villani_code/tui/controller.py"],
+        assumptions=["Validate with targeted pytest"],
+        recommended_steps=["Inspect planning parser behavior", "Suppress planning stream text in TUI controller"],
+        open_questions=[],
+        ready_to_execute=True,
+        risk_level="medium",
+        confidence_score=0.82,
+    )
+    app.apply_plan_result(result, reset_answers=True)
+    assert "Plan:" in app._log_plain_text
+    assert "Implementation steps:" in app._log_plain_text
+    assert "{" not in app._log_plain_text
+    assert "}" not in app._log_plain_text
+
+
+def test_plan_flow_from_mixed_narrative_json_renders_only_final_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = Runner(DummyClient(), tmp_path, model="demo")
+    app = VillaniTUI(DummyRunnerForApp(), tmp_path)
+
+    payload = {
+        "task_summary": "Fix transcript leaks",
+        "candidate_files": ["villani_code/tui/controller.py"],
+        "assumptions": ["Planning should remain read-only"],
+        "recommended_steps": ["Suppress planning stream text", "Add parser regression tests"],
+        "open_questions": [],
+    }
+    mixed = "Narrative preface that should not render.\n```json\n" + __import__("json").dumps(payload) + "\n```\nTrailing note."
+    monkeypatch.setattr(runner, "run", lambda *_a, **_k: {"response": {"content": [{"type": "text", "text": mixed}]}})
+
+    result = runner.plan("Find the most important bug and plan fix")
+    app.apply_plan_result(result, reset_answers=True)
+    assert "Narrative preface" not in app._log_plain_text
+    assert "```json" not in app._log_plain_text
+    assert "Suppress planning stream text" in app._log_plain_text

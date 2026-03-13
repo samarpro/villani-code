@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from villani_code.planning import PlanRiskLevel, analyze_instruction, classify_plan_risk
-from villani_code.state import Runner
+from villani_code.state import Runner, _parse_planning_response
 
 
 class DummyClient:
@@ -86,3 +86,56 @@ def test_planning_collects_file_evidence(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("villani_code.state._collect_planning_evidence", fake_collect)
     runner.plan("Find ways to improve this repo")
     assert observed
+
+
+def test_parse_planning_response_accepts_fenced_json_with_prose() -> None:
+    text = """I inspected key files.
+
+```json
+{"task_summary": "Fix parser", "recommended_steps": ["step one"]}
+```
+
+Next I can execute."""
+    parsed = _parse_planning_response(text)
+    assert parsed is not None
+    assert parsed["task_summary"] == "Fix parser"
+
+
+def test_parse_planning_response_accepts_prose_plus_bare_json_object() -> None:
+    text = """Plan draft follows.
+{"task_summary": "Fix parsing", "recommended_steps": ["inspect", "patch"]}
+Thanks."""
+    parsed = _parse_planning_response(text)
+    assert parsed is not None
+    assert parsed["recommended_steps"] == ["inspect", "patch"]
+
+
+def test_parse_planning_response_returns_none_when_no_valid_object() -> None:
+    text = "Planning notes only, with no machine payload.```json\n[1,2,3]\n```"
+    assert _parse_planning_response(text) is None
+
+
+def test_plan_does_not_use_fallback_when_structured_parse_succeeds(tmp_path, monkeypatch) -> None:
+    runner = Runner(DummyClient(), tmp_path, model="demo")
+
+    payload = {
+        "task_summary": "Concrete plan",
+        "candidate_files": ["villani_code/state.py"],
+        "assumptions": ["read-only planning"],
+        "recommended_steps": ["Inspect state", "Patch parser"],
+        "open_questions": [],
+    }
+
+    monkeypatch.setattr(
+        runner,
+        "run",
+        lambda *_a, **_k: {"response": {"content": [{"type": "text", "text": "Narrative first.\n```json\n" + json.dumps(payload) + "\n```"}]}}
+    )
+
+    def fail_if_fallback(*_a, **_k):
+        raise AssertionError("fallback path should not run")
+
+    monkeypatch.setattr("villani_code.state.generate_execution_plan", fail_if_fallback)
+    result = runner.plan("Find bug and plan fix")
+    assert result.task_summary == "Concrete plan"
+    assert result.recommended_steps == ["Inspect state", "Patch parser"]

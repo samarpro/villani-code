@@ -119,15 +119,73 @@ def _collect_planning_evidence(repo: Path, instruction: str, repo_map: dict[str,
 
 def _parse_planning_response(text: str) -> dict[str, Any] | None:
     stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = stripped.strip("`")
-        if stripped.lower().startswith("json"):
-            stripped = stripped[4:].strip()
-    try:
-        payload = json.loads(stripped)
-    except json.JSONDecodeError:
+    if not stripped:
         return None
-    return payload if isinstance(payload, dict) else None
+
+    decoder = json.JSONDecoder()
+
+    def _try_decode(candidate: str) -> dict[str, Any] | None:
+        fragment = candidate.strip()
+        if not fragment:
+            return None
+        try:
+            payload = json.loads(fragment)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    candidates: list[str] = []
+
+    direct = _try_decode(stripped)
+    if direct is not None:
+        return direct
+
+    lines = stripped.splitlines()
+    inside_fence = False
+    fence_lang = ""
+    fence_buf: list[str] = []
+    for line in lines:
+        marker = line.strip()
+        if marker.startswith("```"):
+            if inside_fence:
+                block = "\n".join(fence_buf).strip()
+                if fence_lang in {"", "json", "application/json"} and block:
+                    candidates.append(block)
+                inside_fence = False
+                fence_lang = ""
+                fence_buf = []
+                continue
+            inside_fence = True
+            fence_lang = marker[3:].strip().lower()
+            fence_buf = []
+            continue
+        if inside_fence:
+            fence_buf.append(line)
+
+    text_len = len(stripped)
+    for idx, char in enumerate(stripped):
+        if char != "{":
+            continue
+        try:
+            obj, end = decoder.raw_decode(stripped[idx:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            candidates.append(stripped[idx : idx + end])
+            if idx + end >= text_len:
+                break
+
+    best_payload: dict[str, Any] | None = None
+    best_size = -1
+    for candidate in candidates:
+        payload = _try_decode(candidate)
+        if payload is None:
+            continue
+        size = len(candidate)
+        if size > best_size:
+            best_payload = payload
+            best_size = size
+    return best_payload
 
 
 def _normalize_plan_text_item(item: Any) -> str:
