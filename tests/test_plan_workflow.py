@@ -174,11 +174,28 @@ def test_runner_plan_summary_does_not_include_planning_boilerplate(tmp_path: Pat
 
 def test_runner_plan_for_repo_review_has_concrete_steps_without_generic_questions(tmp_path: Path) -> None:
     runner = Runner(DummyClient(), tmp_path, model="demo")
-    result = runner.plan("Look through the repo and find improvements I can make")
+    result = runner.plan("Find improvements for this repo")
+    assert result.ready_to_execute is True
     assert result.candidate_files
-    assert any("Survey high-signal areas" in step for step in result.recommended_steps)
     assert result.open_questions == []
+    generic_markers = (
+        "survey high-signal areas",
+        "map the smallest safe implementation scope",
+        "identify concrete improvement candidates",
+    )
+    # If a generic marker appears, it must be accompanied by concrete file/module references.
+    for step in result.recommended_steps:
+        lowered = step.lower()
+        if any(marker in lowered for marker in generic_markers):
+            assert any(path in step for path in result.candidate_files)
 
+
+
+
+def test_runner_plan_records_real_file_evidence(tmp_path: Path) -> None:
+    runner = Runner(DummyClient(), tmp_path, model="demo")
+    result = runner.plan("Find improvements for this repo")
+    assert any(item.startswith("Evidence inspected: ") for item in result.assumptions)
 
 def test_plan_inline_prompt_starts_planning_immediately(tmp_path: Path) -> None:
     app = VillaniTUI(DummyRunnerForApp(), tmp_path)
@@ -224,6 +241,8 @@ def test_clarification_only_for_real_design_uncertainty(tmp_path: Path, monkeypa
     result = runner.plan("Implement feature with ambiguous architecture")
     assert len(result.open_questions) == 1
     assert result.open_questions[0].id == "implementation_path"
+
+
 def test_run_with_plan_uses_approved_plan_payload(tmp_path: Path) -> None:
     runner = Runner(DummyClient(), tmp_path, model="demo")
     seen: dict[str, str] = {}
@@ -276,6 +295,8 @@ def test_execute_runs_last_ready_plan(tmp_path: Path) -> None:
     app.current_plan_result = PlanSessionResult(instruction="a", task_summary="b", ready_to_execute=True)
     app._execute_command_item(type("I", (), {"trigger": "/execute"})())
     assert app.controller.calls == ["execute"]
+
+
 def test_execute_fails_cleanly_when_plan_unresolved(tmp_path: Path) -> None:
     app = VillaniTUI(DummyRunnerForApp(), tmp_path)
     app.controller = ControllerSpy()

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+from typing import Any
 
 from villani_code.benchmark.runtime_config import BenchmarkRuntimeConfig
 from villani_code.plan_session import PlanSessionResult
@@ -109,3 +111,42 @@ def build_execution_instruction_from_plan(plan: PlanSessionResult) -> str:
         "Execute the approved plan now. Do not re-plan from scratch unless blocked by new evidence.",
     ]
     return "\n".join(sections)
+
+
+def build_solution_planning_messages(
+    instruction: str,
+    repo_summary: dict[str, Any],
+    evidence: list[dict[str, str]],
+    answers: list[dict[str, str]] | None = None,
+) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
+    system = [
+        {
+            "type": "text",
+            "text": (
+                "You are planning work in strict read-only mode. "
+                "Inspect evidence and produce a concrete, repo-specific solution plan. "
+                "Avoid generic scaffolding. Ask clarification questions only when ambiguity materially changes design. "
+                "Return strict JSON with keys: "
+                "task_summary, candidate_files, assumptions, recommended_steps, risks, validation_approach, open_questions. "
+                "open_questions must contain at most 3 questions; each has exactly 4 options with exactly one labeled 'Other'."
+            ),
+        }
+    ]
+    payload = {
+        "instruction": instruction,
+        "repo_summary": repo_summary,
+        "evidence": evidence,
+        "resolved_answers": answers or [],
+    }
+    messages: list[dict[str, object]] = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Plan this task using repository evidence and return JSON only:\n" + json.dumps(payload, indent=2),
+                }
+            ],
+        }
+    ]
+    return system, messages
