@@ -106,3 +106,45 @@
   content-align: right middle;
   color: $text-muted;
 }
+
+#plan-question {
+  display: none;
+  height: auto;
+  margin: 0 1;
+  padding: 0 1;
+  border: round #3b3f4a;
+  background: #0f172a;
+}
+
+#plan-question-text {
+  text-style: bold;
+}
+
+#plan-question-rationale {
+  color: $text-muted;
+}
+
+#plan-question-options {
+  height: auto;
+  max-height: 6;
+}
+
+#plan-question-options > ListItem.selected {
+  background: #1f6feb;
+  color: #ffffff;
+  text-style: bold;
+}
+
+#plan-other-input {
+  width: 1fr;
+}
+
+#plan-question-submit {
+  color: $text-muted;
+}
+
+#plan-mode {
+  width: 10;
+  content-align: right middle;
+  color: $text-muted;
+}

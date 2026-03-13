@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+from typing import Any
 
 from villani_code.benchmark.runtime_config import BenchmarkRuntimeConfig
+from villani_code.plan_session import PlanSessionResult
 from villani_code.planning import TaskMode
 from villani_code.utils import now_local_date
 
@@ -74,3 +77,76 @@ def build_initial_messages(repo: Path, user_instruction: str, autonomous_objecti
     ]
     objective_tag = "<autonomous-objective>" if autonomous_objective else "<user-objective>"
     return [{"role": "user", "content": [{"type": "text", "text": r} for r in reminders] + [{"type": "text", "text": f"{objective_tag}{user_instruction}</autonomous-objective>" if autonomous_objective else user_instruction}]}]
+
+
+def build_planning_instruction(user_instruction: str) -> str:
+    return "\n".join(
+        [
+            "Create an implementation plan in read-only inspection mode.",
+            "Do not edit files, do not run mutating commands, and do not propose immediate execution.",
+            "Ask at most 3 high-value clarification questions only when necessary.",
+            "Each clarification question must include exactly 4 options: 3 concrete fixed options and one option labeled exactly 'Other'.",
+            "For minor ambiguity, make a default assumption and record it.",
+            f"Task instruction: {user_instruction}",
+        ]
+    )
+
+
+def build_execution_instruction_from_plan(plan: PlanSessionResult) -> str:
+    answers = []
+    for answer in plan.resolved_answers:
+        text = f"{answer.question_id}: {answer.selected_option_id}"
+        if answer.other_text.strip():
+            text += f" (other={answer.other_text.strip()})"
+        answers.append(text)
+    sections = [
+        f"Original instruction: {plan.instruction}",
+        f"Approved task summary: {plan.task_summary}",
+        "Recommended steps:",
+        *[f"- {step}" for step in plan.recommended_steps],
+        "Assumptions and constraints:",
+        *[f"- {item}" for item in plan.assumptions],
+        "Resolved clarifications:",
+        *([f"- {item}" for item in answers] if answers else ["- none"]),
+        "Execute the approved plan now. Do not re-plan from scratch unless blocked by new evidence.",
+    ]
+    return "\n".join(sections)
+
+
+def build_solution_planning_messages(
+    instruction: str,
+    repo_summary: dict[str, Any],
+    evidence: list[dict[str, str]],
+    answers: list[dict[str, str]] | None = None,
+) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
+    system = [
+        {
+            "type": "text",
+            "text": (
+                "You are planning work in strict read-only mode. "
+                "Inspect evidence and produce a concrete, repo-specific solution plan. "
+                "Avoid generic scaffolding. Ask clarification questions only when ambiguity materially changes design. "
+                "Return strict JSON with keys: "
+                "task_summary, candidate_files, assumptions, recommended_steps, risks, validation_approach, open_questions. "
+                "open_questions must contain at most 3 questions; each has exactly 4 options with exactly one labeled 'Other'."
+            ),
+        }
+    ]
+    payload = {
+        "instruction": instruction,
+        "repo_summary": repo_summary,
+        "evidence": evidence,
+        "resolved_answers": answers or [],
+    }
+    messages: list[dict[str, object]] = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Plan this task using repository evidence and return JSON only:\n" + json.dumps(payload, indent=2),
+                }
+            ],
+        }
+    ]
+    return system, messages

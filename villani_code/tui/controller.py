@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import shlex
 import threading
 import traceback
 import uuid
-import shlex
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from villani_code.plan_session import PlanAnswer, PlanSessionResult
 from villani_code.runtime_events import RuntimeEvent
 from villani_code.tui.messages import ApprovalRequest, LogAppend, SpinnerState, StatusUpdate
 
@@ -36,9 +37,27 @@ class RunnerController:
     def run_prompt(self, text: str) -> None:
         threading.Thread(target=self._run_prompt_worker, args=(text,), daemon=True).start()
 
+    def run_plan_prompt(self, text: str) -> None:
+        threading.Thread(target=self._run_plan_prompt_worker, args=(text,), daemon=True).start()
+
+    def submit_plan_answer(self, answer: PlanAnswer) -> None:
+        threading.Thread(target=self._submit_plan_answer_worker, args=(answer,), daemon=True).start()
+
+    def replan(self) -> None:
+        threading.Thread(target=self._replan_worker, daemon=True).start()
+
+    def run_execute_plan(self) -> None:
+        threading.Thread(target=self._run_execute_plan_worker, daemon=True).start()
+
     def run_villani_mode(self) -> None:
         threading.Thread(target=self._run_villani_mode_worker, daemon=True).start()
 
+
+    def _ui_call(self, callback: Any, *args: Any, **kwargs: Any) -> Any:
+        call_from_thread = getattr(self.app, "call_from_thread", None)
+        if callable(call_from_thread):
+            return call_from_thread(callback, *args, **kwargs)
+        return callback(*args, **kwargs)
 
     def _run_villani_mode_worker(self) -> None:
         self.app.post_message(LogAppend("[villani-mode] Autonomous repo improvement started.", kind="meta"))
@@ -65,6 +84,50 @@ class RunnerController:
         self.app.post_message(StatusUpdate("Thinking"))
         self._assistant_stream_saw_text = False
         result = self.runner.run(text)
+        content = result.get("response", {}).get("content", [])
+        response_text = "\n".join(block.get("text", "") for block in content if block.get("type") == "text").strip()
+        if response_text and not self._assistant_stream_saw_text:
+            self.app.post_message(LogAppend(response_text, kind="ai"))
+        self.app.post_message(SpinnerState(False, "Idle"))
+        self.app.post_message(StatusUpdate("Idle"))
+
+    def _run_plan_prompt_worker(self, text: str) -> None:
+        self.app.post_message(LogAppend(f"> {text}", kind="user"))
+        self.app.post_message(SpinnerState(True, None))
+        self.app.post_message(StatusUpdate("Planning"))
+        result = self.runner.plan(text)
+        self._ui_call(self.app.apply_plan_result, result, True)
+        self.app.post_message(SpinnerState(False, None))
+        self.app.post_message(StatusUpdate("Plan ready" if result.ready_to_execute else "Clarifications needed"))
+
+    def _submit_plan_answer_worker(self, answer: PlanAnswer) -> None:
+        self._ui_call(self.app.record_plan_answer, answer)
+        self._replan_worker(auto=True)
+
+    def _replan_worker(self, auto: bool = False) -> None:
+        instruction = self._ui_call(self.app.get_plan_instruction)
+        if not instruction:
+            self.app.post_message(LogAppend("No active planning instruction. Use /plan first.", kind="meta"))
+            return
+        self.app.post_message(SpinnerState(True, None))
+        self.app.post_message(StatusUpdate("Planning"))
+        answers = self._ui_call(self.app.get_plan_answers)
+        result = self.runner.plan(instruction, answers=answers)
+        self._ui_call(self.app.apply_plan_result, result, False)
+        self.app.post_message(SpinnerState(False, None))
+        label = "Replanned" if not auto else "Plan updated"
+        self.app.post_message(StatusUpdate(label if result.ready_to_execute else "Clarifications needed"))
+
+    def _run_execute_plan_worker(self) -> None:
+        plan = self._ui_call(self.app.get_last_ready_plan)
+        if plan is None:
+            self.app.post_message(LogAppend("Cannot execute: no ready plan. Resolve clarifications or run /replan.", kind="meta"))
+            return
+        self.app.post_message(LogAppend("> /execute", kind="user"))
+        self.app.post_message(SpinnerState(True, None))
+        self.app.post_message(StatusUpdate("Executing plan"))
+        self._assistant_stream_saw_text = False
+        result = self.runner.run_with_plan(plan)
         content = result.get("response", {}).get("content", [])
         response_text = "\n".join(block.get("text", "") for block in content if block.get("type") == "text").strip()
         if response_text and not self._assistant_stream_saw_text:

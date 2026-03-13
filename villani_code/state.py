@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import time
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -20,8 +21,9 @@ from villani_code.execution import ExecutionBudget, ExecutionResult
 from villani_code.hooks import HookRunner
 from villani_code.mcp import load_mcp_config
 from villani_code.permissions import Decision, PermissionConfig, PermissionEngine
-from villani_code.prompting import build_initial_messages, build_system_blocks
-from villani_code.planning import TaskMode, classify_task_mode
+from villani_code.plan_session import PlanAnswer, PlanOption, PlanQuestion, PlanSessionResult
+from villani_code.prompting import build_execution_instruction_from_plan, build_initial_messages, build_solution_planning_messages, build_system_blocks
+from villani_code.planning import TaskMode, classify_task_mode, generate_execution_plan
 from villani_code.benchmark.runtime_config import BenchmarkRuntimeConfig
 from villani_code.llm_client import LLMClient
 from villani_code.runtime_safety import ensure_runtime_dependencies_not_shadowed
@@ -40,6 +42,235 @@ from villani_code.utils import (
     merge_extra_json,
     normalize_content_blocks,
 )
+
+
+def _option(question_id: str, suffix: str, label: str, description: str, is_other: bool = False) -> PlanOption:
+    return PlanOption(id=f"{question_id}_{suffix}", label=label, description=description, is_other=is_other)
+
+
+def _dedupe_preserve(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        value = str(item).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+
+
+def _read_text_excerpt(path: Path, limit: int = 1400) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    return text[:limit]
+
+
+def _select_planning_evidence_files(repo: Path, instruction: str, repo_map: dict[str, Any]) -> list[str]:
+    lowered = instruction.lower()
+    candidates: list[str] = []
+    candidates.extend(str(v) for v in repo_map.get("likely_entrypoints", []))
+    candidates.extend(str(v) for v in repo_map.get("manifests", []))
+    candidates.extend(str(v) for v in repo_map.get("config_files", []))
+
+    if any(token in lowered for token in ("tui", "slash", "plan", "execute", "ui")):
+        candidates.extend([
+            "villani_code/tui/app.py",
+            "villani_code/tui/controller.py",
+            "villani_code/tui/components/command_palette.py",
+            "villani_code/tui/widgets/plan_question.py",
+        ])
+    if any(token in lowered for token in ("state", "runner", "workflow", "plan")):
+        candidates.extend([
+            "villani_code/state.py",
+            "villani_code/state_tooling.py",
+            "villani_code/prompting.py",
+        ])
+    if any(token in lowered for token in ("test", "quality", "improve", "review", "repo")):
+        candidates.extend([
+            "tests/test_plan_workflow.py",
+            "tests/test_ui_slash_commands.py",
+        ])
+
+    existing: list[str] = []
+    for raw in _dedupe_preserve(candidates):
+        target = (repo / raw).resolve()
+        if target.exists() and target.is_file() and str(target).startswith(str(repo.resolve())):
+            existing.append(raw)
+        if len(existing) >= 12:
+            break
+    return existing
+
+
+def _collect_planning_evidence(repo: Path, instruction: str, repo_map: dict[str, Any]) -> list[dict[str, str]]:
+    files = _select_planning_evidence_files(repo, instruction, repo_map)
+    evidence: list[dict[str, str]] = []
+    for rel in files:
+        excerpt = _read_text_excerpt(repo / rel)
+        if not excerpt.strip():
+            continue
+        evidence.append({"path": rel, "excerpt": excerpt})
+    return evidence
+
+
+def _parse_planning_response(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.strip("`")
+        if stripped.lower().startswith("json"):
+            stripped = stripped[4:].strip()
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _build_plan_result_from_payload(
+    instruction: str,
+    payload: dict[str, Any],
+    resolved_answers: list[PlanAnswer],
+    evidence_paths: list[str],
+) -> PlanSessionResult | None:
+    task_summary = str(payload.get("task_summary", "")).strip() or instruction.strip()
+    candidate_files = _dedupe_preserve([str(v) for v in payload.get("candidate_files", []) if str(v).strip()])[:16]
+    assumptions = _dedupe_preserve([str(v) for v in payload.get("assumptions", []) if str(v).strip()])
+    recommended_steps = _dedupe_preserve([str(v) for v in payload.get("recommended_steps", []) if str(v).strip()])
+    risks = _dedupe_preserve([str(v) for v in payload.get("risks", []) if str(v).strip()])
+    validation = _dedupe_preserve([str(v) for v in payload.get("validation_approach", []) if str(v).strip()])
+
+    if not recommended_steps:
+        return None
+
+    open_questions: list[PlanQuestion] = []
+    raw_questions = payload.get("open_questions", [])
+    if isinstance(raw_questions, list):
+        for idx, item in enumerate(raw_questions[:3], start=1):
+            if not isinstance(item, dict):
+                continue
+            options_raw = item.get("options", [])
+            if not isinstance(options_raw, list):
+                continue
+            options: list[PlanOption] = []
+            for opt in options_raw[:4]:
+                if not isinstance(opt, dict):
+                    continue
+                options.append(
+                    PlanOption(
+                        id=str(opt.get("id", "")).strip() or f"q{idx}_opt{len(options)+1}",
+                        label=str(opt.get("label", "")).strip() or f"Option {len(options)+1}",
+                        description=str(opt.get("description", "")).strip(),
+                        is_other=bool(opt.get("is_other", False)),
+                    )
+                )
+            if len(options) == 4:
+                try:
+                    open_questions.append(
+                        PlanQuestion(
+                            id=str(item.get("id", "")).strip() or f"q{idx}",
+                            question=str(item.get("question", "")).strip(),
+                            rationale=str(item.get("rationale", "")).strip(),
+                            options=options,
+                        )
+                    )
+                except ValueError:
+                    continue
+
+    assumptions.extend([f"Evidence inspected: {path}" for path in evidence_paths[:8]])
+    assumptions.extend(_format_answer(answer) for answer in resolved_answers)
+    assumptions = _dedupe_preserve(assumptions + [*(f"Risk: {risk}" for risk in risks), *(f"Validation: {step}" for step in validation)])
+
+    ready = not open_questions
+    brief = "\n".join([task_summary, *recommended_steps])
+    return PlanSessionResult(
+        instruction=instruction,
+        task_summary=task_summary,
+        candidate_files=candidate_files,
+        assumptions=assumptions,
+        recommended_steps=recommended_steps,
+        open_questions=open_questions,
+        resolved_answers=resolved_answers,
+        ready_to_execute=ready,
+        execution_brief=brief,
+        risk_level=str(payload.get("risk_level", "medium")),
+        confidence_score=float(payload.get("confidence_score", 0.65) or 0.65),
+    )
+
+def _candidate_files_from_repo_map(plan: Any, repo_map: dict[str, Any]) -> list[str]:
+    seeds = [
+        *list(getattr(plan, "relevant_files", [])),
+        *[str(target.get("target", "")) for target in getattr(plan, "candidate_targets", []) if isinstance(target, dict)],
+        *[str(path) for path in repo_map.get("likely_entrypoints", [])],
+    ]
+    return _dedupe_preserve(seeds)[:12]
+
+
+def _fallback_fallback_repo_specific_steps(instruction: str, candidate_files: list[str], validation_steps: list[str], plan: Any) -> list[str]:
+    lowered = instruction.lower()
+    review_mode = any(token in lowered for token in ("review", "improvement", "improve", "audit", "look through"))
+    top_targets = ", ".join(candidate_files[:5]) if candidate_files else "high-signal files from the repo map"
+
+    if review_mode:
+        steps = [
+            f"Survey high-signal areas first: {top_targets}.",
+            "Audit command routing, runner orchestration, and state transitions for correctness and UX consistency.",
+            "Identify concrete improvement candidates, ranked by user impact and implementation risk.",
+            "For each candidate, capture expected code touch points and verification strategy before execution.",
+        ]
+    else:
+        steps = [
+            f"Inspect likely target files/subsystems: {top_targets}.",
+            "Trace current behavior to locate the smallest viable implementation change.",
+            "Draft concrete code changes in dependency order and note cross-file impacts.",
+        ]
+
+    if getattr(plan, "requires_validation_phase", False):
+        checks = ", ".join(validation_steps[:3]) if validation_steps else "targeted validation commands"
+        steps.append(f"Validate with {checks}, then broaden validation only when failures indicate wider impact.")
+    else:
+        steps.append("No mutation in planning: finalize assumptions and execution constraints for /execute.")
+    return steps
+
+
+def _fallback_fallback_clarification_questions_from_plan(instruction: str, plan: Any, repo_map: dict[str, Any], answers: list[PlanAnswer]) -> list[PlanQuestion]:
+    _ = repo_map
+    if answers:
+        return []
+
+    lowered = instruction.lower()
+    broad_review = any(token in lowered for token in ("look through", "review", "improvements", "improve repo", "audit"))
+    if broad_review:
+        return []
+
+    confidence = float(getattr(plan, "confidence_score", 0.0))
+    actions = set(str(value) for value in getattr(plan, "action_classes", []))
+    has_architecture_fork = "code_edit" in actions and "config_edit" in actions and confidence < 0.45
+    if not has_architecture_fork:
+        return []
+
+    qid = "implementation_path"
+    question = PlanQuestion(
+        id=qid,
+        question="Which implementation path should be prioritized first?",
+        rationale="Both code-level and configuration-level paths look plausible and would change execution order.",
+        options=[
+            _option(qid, "code_first", "Code-path first", "Prioritize source-level behavior changes before config adjustments."),
+            _option(qid, "config_first", "Config-path first", "Prioritize configuration/runtime wiring changes before source edits."),
+            _option(qid, "parallel", "Parallel split", "Plan concurrent updates across code and config with tighter validation gates."),
+            _option(qid, "other", "Other", "Provide a different implementation path preference.", is_other=True),
+        ],
+    )
+    return [question]
+
+
+def _format_answer(plan_answer: PlanAnswer) -> str:
+    value = plan_answer.other_text.strip() if plan_answer.other_text.strip() else plan_answer.selected_option_id
+    return f"{plan_answer.question_id}: {value}"
+
 
 
 class Runner:
@@ -153,9 +384,113 @@ class Runner:
         self._first_attempt_write_lock_active = False
         self._first_attempt_locked_target = ""
         self._context_governance = ContextGovernanceManager(self.repo)
+        self._planning_read_only = False
         self._verification_engine = VerificationEngine(self.repo)
         if self.small_model:
             self._init_small_model_support()
+
+
+    def plan(self, instruction: str, answers: list[PlanAnswer] | None = None) -> PlanSessionResult:
+        from villani_code.project_memory import load_repo_map, load_validation_config, scan_repo
+
+        repo_map = load_repo_map(self.repo)
+        if not repo_map:
+            scanned_map, _, _ = scan_repo(self.repo)
+            repo_map = scanned_map.to_dict()
+        validation_steps = [step.name for step in load_validation_config(self.repo).steps]
+        resolved_answers = list(answers or [])
+
+        evidence_rows = _collect_planning_evidence(self.repo, instruction, repo_map)
+        evidence_paths = [row["path"] for row in evidence_rows]
+
+        self._planning_read_only = True
+        try:
+            try:
+                repo_summary = {
+                    "source_roots": repo_map.get("source_roots", []),
+                    "test_roots": repo_map.get("test_roots", []),
+                    "package_roots": repo_map.get("package_roots", []),
+                    "validation_steps": validation_steps,
+                }
+                answer_rows = [
+                    {
+                        "question_id": answer.question_id,
+                        "selected_option_id": answer.selected_option_id,
+                        "other_text": answer.other_text,
+                    }
+                    for answer in resolved_answers
+                ]
+                system_blocks, messages = build_solution_planning_messages(
+                    instruction,
+                    repo_summary,
+                    evidence_rows,
+                    answers=answer_rows,
+                )
+                payload = {
+                    "model": self.model,
+                    "messages": messages,
+                    "system": system_blocks,
+                    "max_tokens": min(1600, int(self.max_tokens)),
+                    "stream": False,
+                }
+                raw = self.client.create_message(payload, stream=False)
+                content = raw.get("content", []) if isinstance(raw, dict) else []
+                text = "\n".join(
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+                parsed = _parse_planning_response(text)
+                if parsed is not None:
+                    plan_result = _build_plan_result_from_payload(instruction, parsed, resolved_answers, evidence_paths)
+                    if plan_result is not None:
+                        return plan_result
+            except Exception:
+                pass
+
+            # Fallback path only when model-driven planning output is unavailable.
+            execution_plan = generate_execution_plan(instruction, self.repo, repo_map, validation_steps)
+            candidate_files = _candidate_files_from_repo_map(execution_plan, repo_map)
+            recommended_steps = _fallback_repo_specific_steps(instruction, candidate_files, validation_steps, execution_plan)
+            assumptions = [
+                "Planning phase is read-only until /execute.",
+                f"Risk level estimated as {execution_plan.risk_level.value}.",
+                *[
+                    item
+                    for item in execution_plan.assumptions
+                    if "repo_map" not in item.lower() and "validation" not in item.lower()
+                ],
+                *[f"Evidence inspected: {path}" for path in evidence_paths[:8]],
+            ]
+            assumptions = _dedupe_preserve(assumptions)
+            if resolved_answers:
+                assumptions.extend(_format_answer(answer) for answer in resolved_answers)
+                assumptions.append("Clarification decisions are locked for execution.")
+
+            questions = _fallback_clarification_questions_from_plan(instruction, execution_plan, repo_map, resolved_answers)
+            ready = not questions
+            task_summary = instruction.strip() or execution_plan.task_goal
+            execution_brief = "\n".join([task_summary, *recommended_steps])
+            return PlanSessionResult(
+                instruction=instruction,
+                task_summary=task_summary,
+                candidate_files=candidate_files,
+                assumptions=assumptions,
+                recommended_steps=recommended_steps,
+                open_questions=questions,
+                resolved_answers=resolved_answers,
+                ready_to_execute=ready,
+                execution_brief=execution_brief,
+                risk_level=execution_plan.risk_level.value,
+                confidence_score=execution_plan.confidence_score,
+            )
+        finally:
+            self._planning_read_only = False
+
+    def run_with_plan(self, plan: PlanSessionResult) -> dict[str, Any]:
+        if not plan.ready_to_execute:
+            raise RuntimeError("Plan is not ready to execute; unresolved clarifications remain.")
+        return self.run(build_execution_instruction_from_plan(plan))
 
     def run_villani_mode(self) -> dict[str, Any]:
         ensure_runtime_dependencies_not_shadowed(self.repo)

@@ -13,11 +13,13 @@ from textual.timer import Timer
 from textual.widgets import Input, Static
 
 from villani_code.interrupts import InterruptController
+from villani_code.plan_session import PlanAnswer, PlanQuestion, PlanSessionResult
 from villani_code.tui.assets import LAUNCH_BANNER
 from villani_code.tui.components.command_palette import CommandPalette, PaletteItem
 from villani_code.tui.controller import RunnerController
 from villani_code.tui.messages import ApprovalRequest, LogAppend, SpinnerState, StatusUpdate
 from villani_code.tui.widgets.approval import ApprovalBar
+from villani_code.tui.widgets.plan_question import PlanQuestionWidget
 from villani_code.tui.widgets.slash_popup import SlashCommandPopup
 from villani_code.tui.widgets.status import StatusBarWidget
 
@@ -88,10 +90,21 @@ class VillaniTUI(App[None]):
         self.controller = RunnerController(runner, self)
         self.command_palette = CommandPalette()
 
+        self.plan_mode_enabled = False
+        self.plan_session_active = False
+        self.awaiting_plan_prompt = False
+        self.pending_plan_instruction = ""
+        self.current_plan_result: PlanSessionResult | None = None
+        self.pending_questions: list[PlanQuestion] = []
+        self.question_cursor = 0
+        self.captured_answers: list[PlanAnswer] = []
+        self.last_ready_plan: PlanSessionResult | None = None
+
     def compose(self) -> ComposeResult:
         with Vertical(id="main"):
             yield VillaniTranscript(id="log")
             yield ApprovalBar()
+            yield PlanQuestionWidget()
             yield StatusBarWidget(id="status")
             with Vertical(id="input-area"):
                 yield SlashCommandPopup()
@@ -115,6 +128,76 @@ class VillaniTUI(App[None]):
             self._append_log_line(log, "Ready. Type /help for commands.")
             self.query_one(Input).focus()
         self.query_one(StatusBarWidget).set_follow_mode(self.follow_tail)
+        self.query_one(StatusBarWidget).set_plan_mode(self.plan_mode_enabled)
+
+    def apply_plan_result(self, result: PlanSessionResult, reset_answers: bool) -> None:
+        self.current_plan_result = result
+        self.plan_session_active = True
+        self.awaiting_plan_prompt = False
+        self.plan_mode_enabled = True
+        self.pending_questions = list(result.open_questions)
+        self.question_cursor = len(self.captured_answers)
+        if reset_answers:
+            self.captured_answers = []
+            self.question_cursor = 0
+        if result.ready_to_execute:
+            self.last_ready_plan = result
+        plan_lines = [
+            "Plan summary:",
+            f"- task: {result.task_summary}",
+            f"- risk: {result.risk_level}",
+            f"- confidence: {result.confidence_score:.2f}",
+            "- candidate files: " + (", ".join(result.candidate_files) if result.candidate_files else "none"),
+            "- steps:",
+            *[f"  - {step}" for step in result.recommended_steps],
+            "- assumptions:",
+            *[f"  - {item}" for item in result.assumptions],
+        ]
+        self._log_local_meta("\n".join(plan_lines))
+        self._show_current_question_or_finalize()
+        self.query_one(StatusBarWidget).set_plan_mode(True)
+
+    def _set_question_mode(self, enabled: bool) -> None:
+        input_widget = self.query_one(Input)
+        input_widget.disabled = enabled
+        if not enabled:
+            input_widget.focus()
+
+    def _show_current_question_or_finalize(self) -> None:
+        widget = self.query_one(PlanQuestionWidget)
+        if self.question_cursor < len(self.pending_questions):
+            question = self.pending_questions[self.question_cursor]
+            self._set_question_mode(True)
+            lines = [
+                f"Clarification {self.question_cursor + 1}/{len(self.pending_questions)}: {question.question}",
+                *[f"[{idx}] {option.label}" for idx, option in enumerate(question.options, start=1)],
+            ]
+            self._log_local_meta("\n".join(lines))
+            self.query_one(StatusBarWidget).set_status("Awaiting clarification")
+            widget.show_question(question)
+            self.call_after_refresh(lambda: widget.scroll_visible(animate=False))
+            return
+        widget.hide_question()
+        self._set_question_mode(False)
+        if self.current_plan_result and self.current_plan_result.ready_to_execute:
+            self.query_one(StatusBarWidget).set_status("Plan ready")
+            self._log_local_meta("Plan is ready. Run /execute to start implementation.")
+
+    def record_plan_answer(self, answer: PlanAnswer) -> None:
+        self.captured_answers.append(answer)
+        self.question_cursor += 1
+        self._log_local_meta(f"Answer recorded for {answer.question_id}: {answer.selected_option_id}")
+
+    def get_plan_instruction(self) -> str:
+        return self.pending_plan_instruction
+
+    def get_plan_answers(self) -> list[PlanAnswer]:
+        return list(self.captured_answers)
+
+    def get_last_ready_plan(self) -> PlanSessionResult | None:
+        if self.current_plan_result and self.current_plan_result.ready_to_execute:
+            return self.current_plan_result
+        return self.last_ready_plan
 
     def _append_log(self, log: VillaniTranscript, text: str) -> None:
         log.append_text(text, follow_tail=self.follow_tail)
@@ -135,7 +218,7 @@ class VillaniTUI(App[None]):
 
             pyperclip.copy(text)
             return
-        except Exception as exc:  # pragma: no cover - exact backend failure is platform-dependent
+        except Exception as exc:  # pragma: no cover
             raise RuntimeError("Clipboard copy failed") from exc
 
     def action_copy_console(self) -> None:
@@ -178,21 +261,76 @@ class VillaniTUI(App[None]):
         if trigger == "/help":
             self._show_help()
             return
+        if trigger == "/plan":
+            self.awaiting_plan_prompt = True
+            self.plan_mode_enabled = True
+            self.plan_session_active = False
+            self._log_local_meta("Enter a planning prompt.")
+            status = self.query_one(StatusBarWidget)
+            status.set_status("Awaiting plan prompt")
+            status.set_plan_mode(True)
+            return
+        if trigger == "/cancelplan":
+            self.plan_session_active = False
+            self.awaiting_plan_prompt = False
+            self.pending_plan_instruction = ""
+            self.current_plan_result = None
+            self.pending_questions = []
+            self.question_cursor = 0
+            self.captured_answers = []
+            self.last_ready_plan = None
+            self.query_one(PlanQuestionWidget).hide_question()
+            self._set_question_mode(False)
+            status = self.query_one(StatusBarWidget)
+            status.set_status("Plan canceled")
+            status.set_plan_mode(False)
+            self._log_local_meta("Planning session canceled.")
+            return
+        if trigger == "/replan":
+            self.controller.replan()
+            return
+        if trigger == "/execute":
+            if self.current_plan_result and not self.current_plan_result.ready_to_execute:
+                self._log_local_meta("Cannot execute: unresolved clarifications. Finish answers or use /replan.")
+                return
+            self.awaiting_plan_prompt = False
+            self.plan_mode_enabled = False
+            self.plan_session_active = False
+            self.query_one(StatusBarWidget).set_plan_mode(False)
+            self.query_one(PlanQuestionWidget).hide_question()
+            self._set_question_mode(False)
+            self.controller.run_execute_plan()
+            return
         self._log_local_meta(f"{trigger} is not implemented yet in this build.")
+
+    def _start_plan(self, prompt: str) -> None:
+        self.awaiting_plan_prompt = False
+        self.plan_mode_enabled = True
+        self.plan_session_active = True
+        self.pending_plan_instruction = prompt
+        self._log_local_meta("Creating read-only implementation plan...")
+        status = self.query_one(StatusBarWidget)
+        status.set_status("Planning")
+        status.set_plan_mode(True)
+        self.controller.run_plan_prompt(prompt)
 
     def _show_help(self) -> None:
         lines = ["Available slash commands:"]
         for item in self.command_palette.slash_items():
-            lines.append(f"  {item.trigger:<10} {item.description}")
+            lines.append(f"  {item.trigger:<12} {item.description}")
         self._log_local_meta("\n".join(lines))
 
     def _handle_slash_command(self, text: str) -> bool:
         if not text.startswith("/"):
             return False
-        command = text.split()[0].lower()
-        item = self.command_palette.command_by_trigger(command)
+        command, _, remainder = text.partition(" ")
+        normalized = command.lower()
+        if normalized == "/plan" and remainder.strip():
+            self._start_plan(remainder.strip())
+            return True
+        item = self.command_palette.command_by_trigger(normalized)
         if item is None:
-            self._log_local_meta(f"Unknown command: {command}. Type /help for commands.")
+            self._log_local_meta(f"Unknown command: {normalized}. Type /help for commands.")
             return True
         self._execute_command_item(item)
         return True
@@ -212,10 +350,22 @@ class VillaniTUI(App[None]):
             self.exit()
             return
         if self._handle_slash_command(text):
-            self.query_one(Input).focus()
+            if not self.query_one(Input).disabled:
+                self.query_one(Input).focus()
             return
         self._interrupts.reset_interrupt_state()
+        if self.awaiting_plan_prompt:
+            self._start_plan(text)
+            return
         self.controller.run_prompt(text)
+
+    @on(PlanQuestionWidget.AnswerSubmitted)
+    def on_plan_answer_submitted(self, event: PlanQuestionWidget.AnswerSubmitted) -> None:
+        self.controller.submit_plan_answer(event.answer)
+
+    @on(PlanQuestionWidget.InvalidAnswer)
+    def on_plan_answer_invalid(self, event: PlanQuestionWidget.InvalidAnswer) -> None:
+        self._log_local_meta(event.reason)
 
     def action_interrupt_or_quit(self) -> None:
         action = self._interrupts.register_interrupt()
@@ -329,12 +479,23 @@ class VillaniTUI(App[None]):
             event.prevent_default()
             return
 
+        question = self.query_one(PlanQuestionWidget)
+        if question.display:
+            if event.key == "up":
+                question.action_cursor_up()
+            elif event.key == "down":
+                question.action_cursor_down()
+            elif event.key == "enter":
+                question.action_confirm()
+            else:
+                return
+            event.stop()
+            event.prevent_default()
+            return
+
         popup = self._slash_popup()
         input_widget = self.query_one(Input)
-        if popup is None:
-            popup_visible = False
-        else:
-            popup_visible = popup.visible
+        popup_visible = bool(popup is not None and popup.visible)
         if popup is not None and popup_visible and self.focused is input_widget:
             if event.key == "down":
                 popup.cursor_down()

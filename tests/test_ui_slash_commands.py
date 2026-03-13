@@ -21,7 +21,19 @@ class FakeController:
         self.calls: list[str] = []
 
     def run_prompt(self, text: str) -> None:
-        self.calls.append(text)
+        self.calls.append(f"run:{text}")
+
+    def run_plan_prompt(self, text: str) -> None:
+        self.calls.append(f"plan:{text}")
+
+    def run_execute_plan(self) -> None:
+        self.calls.append("execute")
+
+    def replan(self) -> None:
+        self.calls.append("replan")
+
+    def submit_plan_answer(self, answer) -> None:
+        self.calls.append(f"answer:{answer.question_id}")
 
     def resolve_approval(self, request_id: str, choice: str) -> None:
         return None
@@ -45,7 +57,7 @@ def test_help_output_lists_supported_slash_commands(tmp_path: Path) -> None:
 
     app.on_input_submitted(Input.Submitted(Input(id="input"), "/help"))
 
-    for command in ("/help", "/tasks", "/settings", "/diff", "/rewind", "/export", "/fork"):
+    for command in ("/help", "/plan", "/replan", "/execute", "/cancelplan", "/tasks", "/settings", "/diff", "/rewind", "/export", "/fork"):
         assert command in app._log_plain_text
 
 
@@ -55,7 +67,7 @@ def test_normal_prompt_flow_still_calls_run_prompt(tmp_path: Path) -> None:
 
     app.on_input_submitted(Input.Submitted(Input(id="input"), "hello"))
 
-    assert app.controller.calls == ["hello"]
+    assert app.controller.calls == ["run:hello"]
 
 
 def test_slash_popup_visibility_and_filtering(tmp_path: Path) -> None:
@@ -125,7 +137,7 @@ def test_slash_popup_keyboard_controls(tmp_path: Path) -> None:
             await pilot.pause()
             assert app.controller.calls == []
             assert not popup.visible
-            assert "not implemented yet in this build" in app._log_plain_text
+            assert "Enter a planning prompt." in app._log_plain_text
 
             input_widget.value = "/"
             await pilot.pause()
