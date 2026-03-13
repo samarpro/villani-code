@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from villani_code.benchmark.runtime_config import BenchmarkRuntimeConfig
+from villani_code.plan_session import PlanSessionResult
 from villani_code.planning import TaskMode
 from villani_code.utils import now_local_date
 
@@ -74,3 +75,37 @@ def build_initial_messages(repo: Path, user_instruction: str, autonomous_objecti
     ]
     objective_tag = "<autonomous-objective>" if autonomous_objective else "<user-objective>"
     return [{"role": "user", "content": [{"type": "text", "text": r} for r in reminders] + [{"type": "text", "text": f"{objective_tag}{user_instruction}</autonomous-objective>" if autonomous_objective else user_instruction}]}]
+
+
+def build_planning_instruction(user_instruction: str) -> str:
+    return "\n".join(
+        [
+            "Create an implementation plan in read-only inspection mode.",
+            "Do not edit files, do not run mutating commands, and do not propose immediate execution.",
+            "Ask at most 3 high-value clarification questions only when necessary.",
+            "Each clarification question must include exactly 4 options: 3 concrete fixed options and one option labeled exactly 'Other'.",
+            "For minor ambiguity, make a default assumption and record it.",
+            f"Task instruction: {user_instruction}",
+        ]
+    )
+
+
+def build_execution_instruction_from_plan(plan: PlanSessionResult) -> str:
+    answers = []
+    for answer in plan.resolved_answers:
+        text = f"{answer.question_id}: {answer.selected_option_id}"
+        if answer.other_text.strip():
+            text += f" (other={answer.other_text.strip()})"
+        answers.append(text)
+    sections = [
+        f"Original instruction: {plan.instruction}",
+        f"Approved task summary: {plan.task_summary}",
+        "Recommended steps:",
+        *[f"- {step}" for step in plan.recommended_steps],
+        "Assumptions and constraints:",
+        *[f"- {item}" for item in plan.assumptions],
+        "Resolved clarifications:",
+        *([f"- {item}" for item in answers] if answers else ["- none"]),
+        "Execute the approved plan now. Do not re-plan from scratch unless blocked by new evidence.",
+    ]
+    return "\n".join(sections)

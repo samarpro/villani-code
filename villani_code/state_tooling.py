@@ -109,6 +109,15 @@ def execute_tool_with_policy(
     if not hook_pre.allow:
         return {"content": f"Blocked by hook: {hook_pre.reason}", "is_error": True}
 
+    if getattr(runner, "_planning_read_only", False):
+        if tool_name in {"Write", "Patch", "Edit"}:
+            return {"content": "Planning mode is read-only: file mutation tools are blocked", "is_error": True}
+        if tool_name == "Bash":
+            command = str(tool_input.get("command", "")).strip().lower()
+            readonly_prefixes = ("pwd", "ls", "cat", "rg", "grep", "find", "head", "tail", "wc", "git status", "git diff", "git log", "git show", "git branch")
+            if not any(command.startswith(prefix) for prefix in readonly_prefixes):
+                return {"content": "Planning mode is read-only: mutating shell command blocked", "is_error": True}
+
     if runner.small_model or runner.villani_mode or runner.benchmark_config.enabled:
         policy_error = runner._small_model_tool_guard(tool_name, tool_input)
         if policy_error:

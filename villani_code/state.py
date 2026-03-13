@@ -20,8 +20,9 @@ from villani_code.execution import ExecutionBudget, ExecutionResult
 from villani_code.hooks import HookRunner
 from villani_code.mcp import load_mcp_config
 from villani_code.permissions import Decision, PermissionConfig, PermissionEngine
-from villani_code.prompting import build_initial_messages, build_system_blocks
-from villani_code.planning import TaskMode, classify_task_mode
+from villani_code.plan_session import PlanAnswer, PlanOption, PlanQuestion, PlanSessionResult
+from villani_code.prompting import build_execution_instruction_from_plan, build_initial_messages, build_planning_instruction, build_system_blocks
+from villani_code.planning import TaskMode, classify_task_mode, generate_execution_plan
 from villani_code.benchmark.runtime_config import BenchmarkRuntimeConfig
 from villani_code.llm_client import LLMClient
 from villani_code.runtime_safety import ensure_runtime_dependencies_not_shadowed
@@ -40,6 +41,62 @@ from villani_code.utils import (
     merge_extra_json,
     normalize_content_blocks,
 )
+
+
+def _option(question_id: str, suffix: str, label: str, description: str, is_other: bool = False) -> PlanOption:
+    return PlanOption(id=f"{question_id}_{suffix}", label=label, description=description, is_other=is_other)
+
+
+def _generate_plan_questions(instruction: str, plan: Any) -> list[PlanQuestion]:
+    questions: list[PlanQuestion] = []
+    text = instruction.lower()
+    if any(word in text for word in {"plan", "workflow", "mode"}):
+        qid = "plan_mode_behavior"
+        questions.append(
+            PlanQuestion(
+                id=qid,
+                question="How should planning mode persist in this session?",
+                rationale="This choice changes prompt routing and command behavior.",
+                options=[
+                    _option(qid, "sticky", "Sticky planning", "Keep planning active until /execute or /cancelplan."),
+                    _option(qid, "one_shot", "One-shot planning", "Use planning for only the next prompt."),
+                    _option(qid, "config", "Config-driven mode", "Expose a setting for sticky vs one-shot behavior."),
+                    _option(qid, "other", "Other", "Provide a custom planning persistence rule.", is_other=True),
+                ],
+            )
+        )
+    if "execute" in text or "run" in text:
+        qid = "execution_gate"
+        questions.append(
+            PlanQuestion(
+                id=qid,
+                question="When should /execute be allowed to start work?",
+                rationale="This defines how strictly plan approval blocks execution.",
+                options=[
+                    _option(qid, "ready_only", "Ready plan only", "Require ready_to_execute with all clarifications resolved."),
+                    _option(qid, "confirm", "Ready plan + confirmation", "Require ready state and an extra confirmation prompt."),
+                    _option(qid, "risk_based", "Risk-based gate", "Allow medium/low plans; block high-risk plans until confirmed."),
+                    _option(qid, "other", "Other", "Provide custom execution gate logic.", is_other=True),
+                ],
+            )
+        )
+    if getattr(plan, 'requires_validation_phase', False):
+        qid = "validation_depth"
+        questions.append(
+            PlanQuestion(
+                id=qid,
+                question="What default validation depth should execution apply?",
+                rationale="Validation scope affects runtime and confidence in changes.",
+                options=[
+                    _option(qid, "targeted", "Targeted tests", "Run only tests linked to touched files first."),
+                    _option(qid, "staged", "Staged validation", "Run targeted checks then broaden on failure."),
+                    _option(qid, "full", "Full suite", "Run the full configured validation sequence."),
+                    _option(qid, "other", "Other", "Provide a custom validation sequence.", is_other=True),
+                ],
+            )
+        )
+    return questions[:3]
+
 
 
 class Runner:
@@ -153,9 +210,57 @@ class Runner:
         self._first_attempt_write_lock_active = False
         self._first_attempt_locked_target = ""
         self._context_governance = ContextGovernanceManager(self.repo)
+        self._planning_read_only = False
         self._verification_engine = VerificationEngine(self.repo)
         if self.small_model:
             self._init_small_model_support()
+
+
+    def plan(self, instruction: str, answers: list[PlanAnswer] | None = None) -> PlanSessionResult:
+        from villani_code.project_memory import load_repo_map, load_validation_config, scan_repo
+
+        repo_map = load_repo_map(self.repo)
+        if not repo_map:
+            scanned_map, _, _ = scan_repo(self.repo)
+            repo_map = scanned_map.to_dict()
+        validation_steps = [step.name for step in load_validation_config(self.repo).steps]
+        execution_plan = generate_execution_plan(build_planning_instruction(instruction), self.repo, repo_map, validation_steps)
+        resolved_answers = list(answers or [])
+        assumptions = list(execution_plan.assumptions)
+        if resolved_answers:
+            assumptions.append("Clarifications resolved and locked for execution.")
+        questions: list[PlanQuestion] = []
+        if not resolved_answers:
+            questions = _generate_plan_questions(instruction, execution_plan)
+
+        task_summary = execution_plan.task_goal
+        recommended_steps = list(execution_plan.proposed_actions)
+        for answer in resolved_answers:
+            option_value = answer.selected_option_id
+            if answer.other_text.strip():
+                option_value = answer.other_text.strip()
+            assumptions.append(f"{answer.question_id}: {option_value}")
+
+        ready = not questions
+        execution_brief = "\n".join([task_summary, *recommended_steps])
+        return PlanSessionResult(
+            instruction=instruction,
+            task_summary=task_summary,
+            candidate_files=list(execution_plan.relevant_files),
+            assumptions=assumptions,
+            recommended_steps=recommended_steps,
+            open_questions=questions,
+            resolved_answers=resolved_answers,
+            ready_to_execute=ready,
+            execution_brief=execution_brief,
+            risk_level=execution_plan.risk_level.value,
+            confidence_score=execution_plan.confidence_score,
+        )
+
+    def run_with_plan(self, plan: PlanSessionResult) -> dict[str, Any]:
+        if not plan.ready_to_execute:
+            raise RuntimeError("Plan is not ready to execute; unresolved clarifications remain.")
+        return self.run(build_execution_instruction_from_plan(plan))
 
     def run_villani_mode(self) -> dict[str, Any]:
         ensure_runtime_dependencies_not_shadowed(self.repo)
