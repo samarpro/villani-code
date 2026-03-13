@@ -152,14 +152,27 @@ class VillaniTUI(App[None]):
         self._log_local_meta("\n".join(plan_lines))
         self._show_current_question_or_finalize()
 
+    def _set_question_mode(self, enabled: bool) -> None:
+        input_widget = self.query_one(Input)
+        input_widget.disabled = enabled
+        if not enabled:
+            input_widget.focus()
+
     def _show_current_question_or_finalize(self) -> None:
         widget = self.query_one(PlanQuestionWidget)
         if self.question_cursor < len(self.pending_questions):
             question = self.pending_questions[self.question_cursor]
-            self._log_local_meta(f"Clarification {self.question_cursor + 1}/{len(self.pending_questions)}: {question.question}")
+            self._set_question_mode(True)
+            lines = [
+                f"Clarification {self.question_cursor + 1}/{len(self.pending_questions)}: {question.question}",
+                *[f"[{idx}] {option.label}" for idx, option in enumerate(question.options, start=1)],
+            ]
+            self._log_local_meta("\n".join(lines))
             widget.show_question(question)
+            self.call_after_refresh(lambda: widget.scroll_visible(animate=False))
             return
         widget.hide_question()
+        self._set_question_mode(False)
         if self.current_plan_result and self.current_plan_result.ready_to_execute:
             self._log_local_meta("Plan is ready. Run /execute to start implementation.")
 
@@ -258,6 +271,7 @@ class VillaniTUI(App[None]):
             self.captured_answers = []
             self.last_ready_plan = None
             self.query_one(PlanQuestionWidget).hide_question()
+            self._set_question_mode(False)
             status = self.query_one(StatusBarWidget)
             status.set_status("Plan canceled")
             status.set_plan_mode(False)
@@ -274,6 +288,7 @@ class VillaniTUI(App[None]):
             self.plan_session_active = False
             self.query_one(StatusBarWidget).set_plan_mode(False)
             self.query_one(PlanQuestionWidget).hide_question()
+            self._set_question_mode(False)
             self.controller.run_execute_plan()
             return
         self._log_local_meta(f"{trigger} is not implemented yet in this build.")
@@ -310,7 +325,8 @@ class VillaniTUI(App[None]):
             self.exit()
             return
         if self._handle_slash_command(text):
-            self.query_one(Input).focus()
+            if not self.query_one(Input).disabled:
+                self.query_one(Input).focus()
             return
         self._interrupts.reset_interrupt_state()
         if self.plan_mode_enabled and self.plan_session_active:

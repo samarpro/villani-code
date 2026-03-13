@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,8 @@ from villani_code.plan_session import PlanAnswer, PlanOption, PlanQuestion, Plan
 from villani_code.state import Runner
 from villani_code.state_tooling import execute_tool_with_policy
 from villani_code.tui.app import VillaniTUI
+from villani_code.tui.controller import RunnerController
+from villani_code.tui.widgets.plan_question import PlanQuestionWidget
 
 
 class DummyClient:
@@ -71,6 +74,82 @@ class MinimalRunner:
         self._emit_policy_event = lambda *_a, **_k: None
 
 
+class PlanningRunnerStub:
+    print_stream = False
+    approval_callback = None
+    event_callback = None
+    permissions = None
+
+    def __init__(self) -> None:
+        self.plan_calls: list[tuple[str, list[PlanAnswer]]] = []
+
+    def plan(self, instruction: str, answers: list[PlanAnswer] | None = None) -> PlanSessionResult:
+        resolved = list(answers or [])
+        self.plan_calls.append((instruction, resolved))
+        open_questions = [] if resolved else [
+            PlanQuestion(
+                id="scope",
+                question="Pick scope",
+                rationale="Need one",
+                options=[
+                    PlanOption("s1", "Single-file", "single"),
+                    PlanOption("s2", "Narrow", "narrow"),
+                    PlanOption("s3", "Broad", "broad"),
+                    PlanOption("so", "Other", "custom", is_other=True),
+                ],
+            )
+        ]
+        return PlanSessionResult(
+            instruction=instruction,
+            task_summary="Real task summary",
+            candidate_files=["villani_code/tui/app.py"],
+            assumptions=["assume a"],
+            recommended_steps=["inspect file", "prepare plan"],
+            open_questions=open_questions,
+            resolved_answers=resolved,
+            ready_to_execute=not open_questions,
+            execution_brief="brief",
+            risk_level="medium",
+            confidence_score=0.7,
+        )
+
+    def run(self, text: str):
+        return {"response": {"content": [{"type": "text", "text": text}]}}
+
+    def run_with_plan(self, plan: PlanSessionResult):
+        return {"response": {"content": [{"type": "text", "text": plan.task_summary}]}}
+
+
+class ThreadSafeApp:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.messages: list[object] = []
+        self._instruction = "task"
+        self._answers: list[PlanAnswer] = []
+
+    def post_message(self, message: object) -> object:
+        self.messages.append(message)
+        return message
+
+    def call_from_thread(self, callback, *args, **kwargs):
+        self.calls.append(getattr(callback, "__name__", str(callback)))
+        return callback(*args, **kwargs)
+
+    def apply_plan_result(self, _result: PlanSessionResult, _reset: bool) -> None:
+        return None
+
+    def record_plan_answer(self, answer: PlanAnswer) -> None:
+        self._answers.append(answer)
+
+    def get_plan_instruction(self) -> str:
+        return self._instruction
+
+    def get_plan_answers(self) -> list[PlanAnswer]:
+        return list(self._answers)
+
+    def get_last_ready_plan(self) -> PlanSessionResult | None:
+        return None
+
 
 def test_plan_question_enforces_four_options_and_single_other() -> None:
     options = [
@@ -84,13 +163,21 @@ def test_plan_question_enforces_four_options_and_single_other() -> None:
     assert sum(1 for o in q.options if o.is_other) == 1
 
 
-def test_runner_plan_returns_plan_session_result(tmp_path: Path) -> None:
+def test_runner_plan_summary_does_not_include_planning_boilerplate(tmp_path: Path) -> None:
     runner = Runner(DummyClient(), tmp_path, model="demo")
-    result = runner.plan("implement plan workflow")
-    assert isinstance(result, PlanSessionResult)
-    for question in result.open_questions:
-        assert len(question.options) == 4
-        assert sum(1 for option in question.options if option.is_other and option.label == "Other") == 1
+    instruction = "Look through the repo and find improvements I can make"
+    result = runner.plan(instruction)
+    assert result.task_summary == instruction
+    assert "Create an implementation plan in read-only inspection mode" not in result.task_summary
+    assert "Do not edit files" not in result.task_summary
+
+
+def test_runner_plan_for_repo_review_has_repo_specific_steps(tmp_path: Path) -> None:
+    runner = Runner(DummyClient(), tmp_path, model="demo")
+    result = runner.plan("Look through the repo and find improvements I can make")
+    assert result.candidate_files
+    assert any("Inspect" in step for step in result.recommended_steps)
+    assert any("villani_code" in ",".join(result.candidate_files) or "repo map" in step.lower() for step in result.recommended_steps)
 
 
 def test_plan_mode_routes_prompt_to_plan_controller(tmp_path: Path) -> None:
@@ -137,3 +224,79 @@ def test_planning_read_only_blocks_write_tool(tmp_path: Path) -> None:
     blocked = execute_tool_with_policy(runner, "Write", {"file_path": "a.txt", "content": "x"}, "1", 0)
     assert blocked["is_error"] is True
     assert "read-only" in blocked["content"].lower()
+
+
+def test_controller_uses_call_from_thread_for_plan_ui_mutation() -> None:
+    app = ThreadSafeApp()
+    controller = RunnerController(PlanningRunnerStub(), app)
+    controller._run_plan_prompt_worker("task")
+    assert "apply_plan_result" in app.calls
+
+
+def test_execute_fails_cleanly_when_plan_unresolved(tmp_path: Path) -> None:
+    app = VillaniTUI(DummyRunnerForApp(), tmp_path)
+    app.controller = ControllerSpy()
+    app.current_plan_result = PlanSessionResult(instruction="a", task_summary="b", ready_to_execute=False)
+    app._execute_command_item(type("I", (), {"trigger": "/execute"})())
+    assert "Cannot execute: unresolved clarifications" in app._log_plain_text
+
+
+def test_question_widget_visible_and_options_render_and_other_validation(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = VillaniTUI(PlanningRunnerStub(), tmp_path)
+        async with app.run_test() as pilot:
+            app.apply_plan_result(app.runner.plan("task"), reset_answers=True)
+            await pilot.pause()
+            widget = app.query_one(PlanQuestionWidget)
+            assert widget.display
+            assert widget.option_labels()[:3] == ["Single-file", "Narrow", "Broad"]
+            await pilot.press("down", "down", "down", "enter")
+            await pilot.pause()
+            assert "Other requires non-empty text." in app._log_plain_text
+
+    asyncio.run(run())
+
+
+def test_final_answer_submission_triggers_replan(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = VillaniTUI(PlanningRunnerStub(), tmp_path)
+        async with app.run_test() as pilot:
+            app.apply_plan_result(app.runner.plan("task"), reset_answers=True)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.runner.plan_calls[-1][1]
+            assert "Plan is ready. Run /execute" in app._log_plain_text
+
+    asyncio.run(run())
+
+
+def test_clarification_options_are_logged_to_transcript(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = VillaniTUI(DummyRunnerForApp(), tmp_path)
+        async with app.run_test() as pilot:
+            app.apply_plan_result(
+                PlanSessionResult(
+                    instruction="task",
+                    task_summary="task",
+                    open_questions=[
+                        PlanQuestion(
+                            id="q",
+                            question="Which one?",
+                            rationale="Need it",
+                            options=[
+                                PlanOption("a", "A", "a"),
+                                PlanOption("b", "B", "b"),
+                                PlanOption("c", "C", "c"),
+                                PlanOption("o", "Other", "o", is_other=True),
+                            ],
+                        )
+                    ],
+                ),
+                reset_answers=True,
+            )
+            await pilot.pause()
+            assert "Clarification 1/1: Which one?" in app._log_plain_text
+            assert "[4] Other" in app._log_plain_text
+
+    asyncio.run(run())

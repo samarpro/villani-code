@@ -21,7 +21,7 @@ from villani_code.hooks import HookRunner
 from villani_code.mcp import load_mcp_config
 from villani_code.permissions import Decision, PermissionConfig, PermissionEngine
 from villani_code.plan_session import PlanAnswer, PlanOption, PlanQuestion, PlanSessionResult
-from villani_code.prompting import build_execution_instruction_from_plan, build_initial_messages, build_planning_instruction, build_system_blocks
+from villani_code.prompting import build_execution_instruction_from_plan, build_initial_messages, build_system_blocks
 from villani_code.planning import TaskMode, classify_task_mode, generate_execution_plan
 from villani_code.benchmark.runtime_config import BenchmarkRuntimeConfig
 from villani_code.llm_client import LLMClient
@@ -47,55 +47,91 @@ def _option(question_id: str, suffix: str, label: str, description: str, is_othe
     return PlanOption(id=f"{question_id}_{suffix}", label=label, description=description, is_other=is_other)
 
 
-def _generate_plan_questions(instruction: str, plan: Any) -> list[PlanQuestion]:
+def _dedupe_preserve(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        value = str(item).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _candidate_files_from_repo_map(plan: Any, repo_map: dict[str, Any]) -> list[str]:
+    seeds = [
+        *list(getattr(plan, "relevant_files", [])),
+        *[str(target.get("target", "")) for target in getattr(plan, "candidate_targets", []) if isinstance(target, dict)],
+        *[str(path) for path in repo_map.get("likely_entrypoints", [])],
+    ]
+    return _dedupe_preserve(seeds)[:12]
+
+
+def _repo_specific_steps(instruction: str, candidate_files: list[str], validation_steps: list[str], plan: Any) -> list[str]:
+    top_targets = ", ".join(candidate_files[:3]) if candidate_files else "highest-signal source files from repo map"
+    steps = [
+        f"Inspect {top_targets} to ground the task: {instruction}.",
+        "Map the smallest safe implementation scope and record assumptions before editing.",
+    ]
+    if getattr(plan, "requires_write_phase", False):
+        steps.append("Implement scoped changes in the selected target files only.")
+    else:
+        steps.append("Keep work read-only and provide prioritized recommendations.")
+    if getattr(plan, "requires_validation_phase", False):
+        checks = ", ".join(validation_steps[:3]) if validation_steps else "targeted validation for touched areas"
+        steps.append(f"Validate with {checks} and expand only if failures require broader checks.")
+    return steps
+
+
+def _clarification_questions_from_plan(instruction: str, plan: Any, repo_map: dict[str, Any], answers: list[PlanAnswer]) -> list[PlanQuestion]:
+    if answers:
+        return []
     questions: list[PlanQuestion] = []
-    text = instruction.lower()
-    if any(word in text for word in {"plan", "workflow", "mode"}):
-        qid = "plan_mode_behavior"
+
+    confidence = float(getattr(plan, "confidence_score", 0.0))
+    broad_review = any(token in instruction.lower() for token in ("look through", "review", "improvements", "improve repo"))
+    package_roots = [str(root) for root in repo_map.get("package_roots", [])][:3]
+    if broad_review and package_roots:
+        qid = "review_priority"
+        options = [
+            _option(qid, f"root_{idx}", root, f"Prioritize improvements in {root} first.")
+            for idx, root in enumerate(package_roots, start=1)
+        ]
+        while len(options) < 3:
+            options.append(_option(qid, f"scope_{len(options)+1}", "Cross-cutting quality", "Focus on repo-wide reliability and DX improvements."))
+        options = options[:3] + [_option(qid, "other", "Other", "Provide a custom focus area.", is_other=True)]
         questions.append(
             PlanQuestion(
                 id=qid,
-                question="How should planning mode persist in this session?",
-                rationale="This choice changes prompt routing and command behavior.",
-                options=[
-                    _option(qid, "sticky", "Sticky planning", "Keep planning active until /execute or /cancelplan."),
-                    _option(qid, "one_shot", "One-shot planning", "Use planning for only the next prompt."),
-                    _option(qid, "config", "Config-driven mode", "Expose a setting for sticky vs one-shot behavior."),
-                    _option(qid, "other", "Other", "Provide a custom planning persistence rule.", is_other=True),
-                ],
+                question="Which area should this improvement review prioritize first?",
+                rationale="The prompt is intentionally broad; choosing a focus area improves plan quality.",
+                options=options,
             )
         )
-    if "execute" in text or "run" in text:
-        qid = "execution_gate"
+
+    if confidence < 0.55 and not broad_review:
+        qid = "scope_preference"
         questions.append(
             PlanQuestion(
                 id=qid,
-                question="When should /execute be allowed to start work?",
-                rationale="This defines how strictly plan approval blocks execution.",
+                question="What implementation scope should the first pass target?",
+                rationale="Low confidence indicates multiple plausible scopes.",
                 options=[
-                    _option(qid, "ready_only", "Ready plan only", "Require ready_to_execute with all clarifications resolved."),
-                    _option(qid, "confirm", "Ready plan + confirmation", "Require ready state and an extra confirmation prompt."),
-                    _option(qid, "risk_based", "Risk-based gate", "Allow medium/low plans; block high-risk plans until confirmed."),
-                    _option(qid, "other", "Other", "Provide custom execution gate logic.", is_other=True),
+                    _option(qid, "single", "Single-file", "Constrain initial work to one high-signal file."),
+                    _option(qid, "narrow", "Narrow multi-file", "Allow a small set of related files."),
+                    _option(qid, "broad", "Broad implementation", "Allow wider refactor if evidence supports it."),
+                    _option(qid, "other", "Other", "Provide a custom scope preference.", is_other=True),
                 ],
             )
         )
-    if getattr(plan, 'requires_validation_phase', False):
-        qid = "validation_depth"
-        questions.append(
-            PlanQuestion(
-                id=qid,
-                question="What default validation depth should execution apply?",
-                rationale="Validation scope affects runtime and confidence in changes.",
-                options=[
-                    _option(qid, "targeted", "Targeted tests", "Run only tests linked to touched files first."),
-                    _option(qid, "staged", "Staged validation", "Run targeted checks then broaden on failure."),
-                    _option(qid, "full", "Full suite", "Run the full configured validation sequence."),
-                    _option(qid, "other", "Other", "Provide a custom validation sequence.", is_other=True),
-                ],
-            )
-        )
+
     return questions[:3]
+
+
+def _format_answer(plan_answer: PlanAnswer) -> str:
+    value = plan_answer.other_text.strip() if plan_answer.other_text.strip() else plan_answer.selected_option_id
+    return f"{plan_answer.question_id}: {value}"
 
 
 
@@ -224,29 +260,38 @@ class Runner:
             scanned_map, _, _ = scan_repo(self.repo)
             repo_map = scanned_map.to_dict()
         validation_steps = [step.name for step in load_validation_config(self.repo).steps]
-        execution_plan = generate_execution_plan(build_planning_instruction(instruction), self.repo, repo_map, validation_steps)
+
+        self._planning_read_only = True
+        try:
+            execution_plan = generate_execution_plan(instruction, self.repo, repo_map, validation_steps)
+        finally:
+            self._planning_read_only = False
+
         resolved_answers = list(answers or [])
-        assumptions = list(execution_plan.assumptions)
+        candidate_files = _candidate_files_from_repo_map(execution_plan, repo_map)
+        recommended_steps = _repo_specific_steps(instruction, candidate_files, validation_steps, execution_plan)
+        assumptions = [
+            "Planning phase is read-only until /execute.",
+            f"Risk level estimated as {execution_plan.risk_level.value}.",
+            *[
+                item
+                for item in execution_plan.assumptions
+                if "repo_map" not in item.lower() and "validation" not in item.lower()
+            ],
+        ]
+        assumptions = _dedupe_preserve(assumptions)
         if resolved_answers:
-            assumptions.append("Clarifications resolved and locked for execution.")
-        questions: list[PlanQuestion] = []
-        if not resolved_answers:
-            questions = _generate_plan_questions(instruction, execution_plan)
+            assumptions.extend(_format_answer(answer) for answer in resolved_answers)
+            assumptions.append("Clarification decisions are locked for execution.")
 
-        task_summary = execution_plan.task_goal
-        recommended_steps = list(execution_plan.proposed_actions)
-        for answer in resolved_answers:
-            option_value = answer.selected_option_id
-            if answer.other_text.strip():
-                option_value = answer.other_text.strip()
-            assumptions.append(f"{answer.question_id}: {option_value}")
-
+        questions = _clarification_questions_from_plan(instruction, execution_plan, repo_map, resolved_answers)
         ready = not questions
+        task_summary = instruction.strip() or execution_plan.task_goal
         execution_brief = "\n".join([task_summary, *recommended_steps])
         return PlanSessionResult(
             instruction=instruction,
             task_summary=task_summary,
-            candidate_files=list(execution_plan.relevant_files),
+            candidate_files=candidate_files,
             assumptions=assumptions,
             recommended_steps=recommended_steps,
             open_questions=questions,

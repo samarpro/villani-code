@@ -37,6 +37,7 @@ class PlanQuestionWidget(Vertical):
         self.query_one("#plan-question-text", Static).update(question.question)
         self.query_one("#plan-question-rationale", Static).update(f"Why this matters: {question.rationale}")
         options = self.query_one("#plan-question-options", ListView)
+        options.can_focus = True
         options.clear()
         for option in question.options:
             options.append(ListItem(Label(f"{option.label} — {option.description}")))
@@ -75,6 +76,7 @@ class PlanQuestionWidget(Vertical):
         else:
             other_input.display = False
             other_input.value = ""
+            self.query_one("#plan-question-options", ListView).focus()
 
     def action_cursor_up(self) -> None:
         if not self.display:
@@ -120,6 +122,12 @@ class PlanQuestionWidget(Vertical):
         if self.display:
             self._sync_selected_style()
             self._sync_other_visibility()
+
+
+    def option_labels(self) -> list[str]:
+        if self._question is None:
+            return []
+        return [option.label for option in self._question.options]
 
     class AnswerSubmitted(Message):
         def __init__(self, answer: PlanAnswer) -> None:
