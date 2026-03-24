@@ -31,6 +31,7 @@ from villani_code.benchmark.policy import (
 )
 from villani_code.benchmark.prompt_contract import benchmark_contract_from_task, render_benchmark_prompt
 from villani_code.benchmark.reporting import render_summary_table, summarize, write_markdown_report, write_results
+from villani_code.benchmark.runtime_config import benchmark_runtime_config_from_task
 from villani_code.benchmark.task_loader import load_tasks
 from villani_code.benchmark.verifier import run_commands
 from villani_code.benchmark.workspace import WorkspaceManager
@@ -420,8 +421,6 @@ class BenchmarkRunner:
 
             try:
                 self._log("starting agent process...")
-                # Fairness map: benchmark runs now use one canonical prompt contract for all agents,
-                # and do not provide Villani-only benchmark runtime controls.
                 benchmark_prompt = render_benchmark_prompt(task, workspace_repo)
                 task_debug_dir = self.output_dir / "agent_debug" / f"{task.id}__r{repeat_index}"
                 task_debug_dir.mkdir(parents=True, exist_ok=True)
@@ -451,6 +450,10 @@ class BenchmarkRunner:
                     encoding="utf-8",
                 )
 
+                benchmark_config_json = None
+                if agent == "villani":
+                    benchmark_config_json = benchmark_runtime_config_from_task(task).model_dump_json()
+
                 execution = adapter.run_agent(
                     repo_path=workspace_repo,
                     prompt=benchmark_prompt,
@@ -459,7 +462,7 @@ class BenchmarkRunner:
                     api_key=api_key,
                     provider=provider,
                     timeout=timeout_seconds,
-                    benchmark_config_json=None,
+                    benchmark_config_json=benchmark_config_json,
                     debug_dir=task_debug_dir,
                 )
                 timeout = execution.timeout
