@@ -1,0 +1,1 @@
+Resuming pagination from a saved cursor skips a page. Fix the state bug and verify it.

@@ -1,0 +1,1 @@
+The documented smoke target is broken because the command runs from the wrong location. Fix the workflow and verify it.
