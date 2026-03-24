@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
@@ -243,7 +244,14 @@ def test_benchmark_runner_uses_shared_prompt_contract_for_all_agents(tmp_path: P
 
     assert villani_result.task_id == "task_1"
     assert claude_result.task_id == "task_1"
-    assert captured["villani"]["payload"] is None
+    villani_payload = captured["villani"]["payload"]
+    assert villani_payload is not None
+    villani_payload_json = json.loads(str(villani_payload))
+    assert villani_payload_json["task_id"] == "task_1"
+    assert villani_payload_json["allowlist_paths"] == ["src/"]
+    assert villani_payload_json["forbidden_paths"] == [".git/"]
+    assert villani_payload_json["visible_verification"] == ["python -c 'print(1)'"]
+    assert villani_payload_json["hidden_verification"] == ["python -c 'print(1)'"]
     assert captured["claude-code"]["payload"] is None
     villani_prompt = str(captured["villani"]["prompt"] or "")
     claude_prompt = str(captured["claude-code"]["prompt"] or "")
