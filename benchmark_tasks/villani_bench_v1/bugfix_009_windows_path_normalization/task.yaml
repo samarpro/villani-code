@@ -9,7 +9,7 @@ expected_artifacts:
 visible_verification:
 - pytest -q
 hidden_verification:
-- PYTHONPATH=src python -c "from app.core import normalize_path; assert normalize_path(r'a\\b\\c') == 'a/b/c'"
+- cd repo && PYTHONPATH=src python -c "from app.core import normalize_path; assert normalize_path(r'a\\b\\c') == 'a/b/c'; assert normalize_path(r'C:\\tmp\\log') == 'C:/tmp/log'"
 success_policy:
   require_visible_pass: true
   require_hidden_pass: true
