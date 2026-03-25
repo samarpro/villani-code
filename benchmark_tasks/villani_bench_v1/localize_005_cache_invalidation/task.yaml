@@ -9,7 +9,7 @@ expected_artifacts:
 visible_verification:
 - pytest -q tests/test_cache_invalidation.py::test_refresh_after_update
 hidden_verification:
-- pytest -q tests/test_cache_invalidation.py::test_unrelated_formatting_helper_still_works
+- python -c "import pathlib, sys; sys.path.insert(0, str(pathlib.Path('src').resolve())); from app.cache import get_value, update_value, format_value; store={'token':'old','other':'keep'}; assert get_value(store, 'token') == 'old'; assert get_value(store, 'other') == 'keep'; update_value(store, 'token', 'new'); assert get_value(store, 'token') == 'new'; assert get_value(store, 'other') == 'keep'; assert format_value(' a ') == 'A'"
 success_policy:
   require_visible_pass: true
   require_hidden_pass: true
