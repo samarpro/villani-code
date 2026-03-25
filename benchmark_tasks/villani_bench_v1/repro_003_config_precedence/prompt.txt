@@ -1,1 +1,1 @@
-Add a regression test reproducing config precedence.
+Add a regression test showing that environment config should override file config.

@@ -1,2 +1,2 @@
-def should_retry(status: int) -> bool:
-    return status in {429,500,502,503,504}
+def should_retry(status_code: int) -> bool:
+    return status_code == 429 or status_code >= 500

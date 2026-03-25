@@ -1,1 +1,1 @@
-Add a regression test reproducing pagination edge case.
+Add a regression test reproducing the bug where the final partial page is dropped.

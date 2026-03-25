@@ -1,1 +1,1 @@
-Use terminal workflow to fix dev script config path.
+Fix the dev script so it loads config from the project config directory when run from the repo root.

@@ -1,1 +1,1 @@
-Find and fix the source of request header drop with minimal edits.
+Find and fix the bug that drops one header during normalization, without changing unrelated URL helpers.

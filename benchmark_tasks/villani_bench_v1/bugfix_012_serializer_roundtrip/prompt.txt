@@ -1,1 +1,1 @@
-Fix the bug for serializer roundtrip and keep tests green.
+Fix serialization so dumping and loading a record preserves unaliased fields as well as aliased ones.

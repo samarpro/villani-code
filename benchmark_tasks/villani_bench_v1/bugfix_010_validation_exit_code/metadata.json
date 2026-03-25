@@ -1,17 +1,15 @@
 {
-  "source_type": "mutated",
-  "tags": [
-    "bugfix",
-    "medium"
-  ],
-  "task_version": "1.0",
+  "seed_type": "bug-seeded",
   "expected_files": [
-    "src/app/core.py"
+    "src/app/cli.py"
   ],
-  "primary_skill": "debug",
+  "reference_patch_size_lines": 8,
+  "primary_skill": "python-debugging",
+  "secondary_skills": [
+    "pytest"
+  ],
   "name": "bugfix_010_validation_exit_code",
   "difficulty": "medium",
-  "reference_patch_size_lines": 0,
   "runtime_stressors": [
     "fault_localization",
     "test_interpretation"

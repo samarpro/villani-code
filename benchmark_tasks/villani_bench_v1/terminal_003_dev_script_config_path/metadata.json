@@ -1,34 +1,32 @@
 {
-  "source_type": "mutated",
-  "tags": [
-    "terminal_workflow",
-    "easy"
-  ],
-  "task_version": "1.0",
+  "seed_type": "bug-seeded",
   "expected_files": [
-    "src/app/core.py"
+    "src/app/devscript.py"
   ],
-  "primary_skill": "debug",
+  "reference_patch_size_lines": 8,
+  "primary_skill": "python-debugging",
+  "secondary_skills": [
+    "pytest"
+  ],
   "name": "terminal_003_dev_script_config_path",
-  "difficulty": "easy",
-  "reference_patch_size_lines": 0,
+  "difficulty": "medium",
   "runtime_stressors": [
+    "fault_localization",
     "test_interpretation"
   ],
-  "task_type": "single_file_bugfix",
+  "task_type": "cli_workflow_fix",
   "requires_repo_navigation": false,
   "requires_multi_step_reasoning": false,
   "has_false_fix_trap": false,
   "requires_retry_recovery": false,
   "likely_tool_sequence": [
-    "inspect_makefile",
-    "run_tests",
+    "read_files",
     "edit_files",
-    "rerun_tests"
+    "run_tests"
   ],
   "evaluation_focus": [
-    "workflow_correctness",
-    "verification_discipline"
+    "correctness",
+    "deterministic_tests"
   ],
   "benchmark_bucket": "baseline"
 }

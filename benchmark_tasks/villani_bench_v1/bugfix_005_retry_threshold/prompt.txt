@@ -1,1 +1,1 @@
-Fix retry threshold logic: currently HTTP 500 is not retried. It should retry for status 500 and above, but not for 400-class errors.
+Fix the retry helper so 429 and 5xx responses are retried, while 4xx client errors below 429 are not.

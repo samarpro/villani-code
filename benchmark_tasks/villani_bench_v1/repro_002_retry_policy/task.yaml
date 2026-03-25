@@ -2,15 +2,14 @@ id: repro_002_retry_policy
 family: repro_test
 difficulty: medium
 language: python
-max_minutes: 3
+max_minutes: 4
 max_files_touched: 2
 expected_artifacts:
 - patch
 visible_verification:
-- python -c "import pathlib, sys, pytest; sys.path.insert(0, str(pathlib.Path('src').resolve())); raise SystemExit(0 if pytest.main(['-q', 'tests/test_retry_policy_regression.py']) != 0 else 1)"
-  0
+- python -c "import pytest; raise SystemExit(0 if pytest.main(['-q', 'tests/test_retry_policy_regression.py']) != 0 else 1)"
 hidden_verification:
-- python -c "import pathlib, sys, pytest; sys.path.insert(0, str(pathlib.Path('src').resolve())); raise SystemExit(pytest.main(['-q', 'tests/test_retry_policy_regression.py']))"
+- pytest -q tests/test_retry_policy_regression.py
 success_policy:
   require_visible_pass: true
   require_hidden_pass: true
@@ -19,3 +18,4 @@ success_policy:
 allowlist_paths:
 - tests/
 benchmark_track: core
+task_type: repro_test_addition
