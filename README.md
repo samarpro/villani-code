@@ -12,7 +12,7 @@ It is a terminal-first coding agent runtime designed to get useful, verifiable w
 
 On the benchmark runs in this repo, **Villani Code achieved the highest solve rate at every reported Qwen3.5 size: 4B, 9B, and 27B.** The strongest result is not just that it solves more. At **27B**, it also does it in substantially less total time than the baseline runner.
 
-![All tasks combined: success rate vs total runtime](03_qwen35_combined_frontier_success_vs_total_runtime.png)
+![All tasks combined: success rate vs total runtime](03_qwen35_combined_frontier_success_vs_total_runtime_reversed_x.png)
 
 ## The pitch
 
