@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from villani_code.patch_apply import PatchApplyError, apply_unified_diff
+from villani_code.patch_apply import PatchApplyError, apply_unified_diff_with_diagnostics
 
 
 class LsInput(BaseModel):
@@ -268,12 +268,22 @@ def _run_patch(data: PatchInput, repo: Path, debug_callback: Any | None = None) 
     if data.file_path:
         _safe_path(repo, data.file_path)
     try:
-        touched = apply_unified_diff(repo, data.unified_diff, default_file_path=data.file_path or None)
+        touched, diagnostics = apply_unified_diff_with_diagnostics(
+            repo, data.unified_diff, default_file_path=data.file_path or None
+        )
     except PatchApplyError as exc:
         raise ValueError(str(exc)) from exc
     if callable(debug_callback):
         for file_path in touched:
-            debug_callback("patch_applied", {"file_path": file_path, "ok": True})
+            debug_callback(
+                "patch_applied",
+                {"file_path": file_path, "ok": True, "used_fallback": file_path in diagnostics.fallback_files},
+            )
+    if diagnostics.fallback_files:
+        return (
+            f"Patch applied to {len(touched)} file(s); "
+            f"whitespace-insensitive fallback used for {len(diagnostics.fallback_files)} file(s)"
+        )
     return f"Patch applied to {len(touched)} file(s)"
 
 
