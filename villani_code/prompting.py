@@ -128,15 +128,19 @@ def build_execution_instruction_from_plan(plan: PlanSessionResult) -> str:
             text += f" (other={answer.other_text.strip()})"
         answers.append(text)
     sections = [
-        f"Original instruction: {plan.instruction}",
-        f"Approved task summary: {plan.task_summary}",
-        "Recommended steps:",
+        "Implement this approved task now.",
+        f"Objective: {plan.task_summary}",
+        f"Original user instruction: {plan.instruction}",
+        "Implementation checklist:",
         *[f"- {step}" for step in plan.recommended_steps],
-        "Assumptions and constraints:",
+        "Constraints and assumptions:",
         *[f"- {item}" for item in plan.assumptions],
-        "Resolved clarifications:",
+        "Resolved clarifications to honor:",
         *([f"- {item}" for item in answers] if answers else ["- none"]),
-        "Execute the approved plan now. Do not re-plan from scratch unless blocked by new evidence.",
+        "Execution requirements:",
+        "- Make the required file edits directly.",
+        "- Run targeted validation for modified behavior.",
+        "- Summarize concrete changes and validation results at the end.",
     ]
     return "\n".join(sections)
 
