@@ -130,6 +130,7 @@ class ThreadSafeApp:
         self.messages: list[object] = []
         self._instruction = "task"
         self._answers: list[PlanAnswer] = []
+        self._stage = "idle"
 
     def post_message(self, message: object) -> object:
         self.messages.append(message)
@@ -153,6 +154,9 @@ class ThreadSafeApp:
 
     def get_last_ready_plan(self) -> PlanSessionResult | None:
         return None
+
+    def set_plan_stage(self, stage: str) -> None:
+        self._stage = stage
 
 
 def test_plan_question_enforces_four_options_and_single_other() -> None:
@@ -326,7 +330,7 @@ def test_bare_plan_enters_prompt_awaiting_mode(tmp_path: Path) -> None:
     app = VillaniTUI(DummyRunnerForApp(), tmp_path)
     app.controller = ControllerSpy()
     app.on_input_submitted(Input.Submitted(Input(id="input"), "/plan"))
-    assert app.awaiting_plan_prompt is True
+    assert app.planning_session.stage == "awaiting_prompt"
     assert app.controller.calls == []
 
 
@@ -335,9 +339,9 @@ def test_bare_plan_enters_prompt_awaiting_mode(tmp_path: Path) -> None:
 def test_ready_plan_does_not_hijack_future_normal_prompts(tmp_path: Path) -> None:
     app = VillaniTUI(DummyRunnerForApp(), tmp_path)
     app.controller = ControllerSpy()
-    app.current_plan_result = PlanSessionResult(instruction="task", task_summary="task", ready_to_execute=True)
-    app.plan_session_active = True
-    app.plan_mode_enabled = True
+    app.planning_session.latest_result = PlanSessionResult(instruction="task", task_summary="task", ready_to_execute=True)
+    app.planning_session.last_ready_plan = app.planning_session.latest_result
+    app.planning_session.stage = "ready"
     app.on_input_submitted(Input.Submitted(Input(id="input"), "normal prompt"))
     assert app.controller.calls == ["run:normal prompt"]
 
@@ -410,7 +414,10 @@ def test_controller_uses_call_from_thread_for_plan_ui_mutation() -> None:
 def test_execute_runs_last_ready_plan(tmp_path: Path) -> None:
     app = VillaniTUI(DummyRunnerForApp(), tmp_path)
     app.controller = ControllerSpy()
-    app.current_plan_result = PlanSessionResult(instruction="a", task_summary="b", ready_to_execute=True)
+    plan = PlanSessionResult(instruction="a", task_summary="b", ready_to_execute=True)
+    app.planning_session.latest_result = plan
+    app.planning_session.last_ready_plan = plan
+    app.planning_session.stage = "ready"
     app._execute_command_item(type("I", (), {"trigger": "/execute"})())
     assert app.controller.calls == ["execute"]
 
@@ -418,9 +425,10 @@ def test_execute_runs_last_ready_plan(tmp_path: Path) -> None:
 def test_execute_fails_cleanly_when_plan_unresolved(tmp_path: Path) -> None:
     app = VillaniTUI(DummyRunnerForApp(), tmp_path)
     app.controller = ControllerSpy()
-    app.current_plan_result = PlanSessionResult(instruction="a", task_summary="b", ready_to_execute=False)
+    app.planning_session.latest_result = PlanSessionResult(instruction="a", task_summary="b", ready_to_execute=False)
+    app.planning_session.stage = "awaiting_clarification"
     app._execute_command_item(type("I", (), {"trigger": "/execute"})())
-    assert "Cannot execute: unresolved clarifications" in app._log_plain_text
+    assert "Cannot execute: no ready plan." in app._log_plain_text
 
 
 def test_question_widget_visible_and_options_render_and_other_validation(tmp_path: Path) -> None:

@@ -37,6 +37,9 @@ class DummyApp:
     def get_last_ready_plan(self):
         return None
 
+    def set_plan_stage(self, stage: str) -> None:
+        _ = stage
+
 
 class ExplodingRunner:
     def __init__(self) -> None:

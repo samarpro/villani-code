@@ -492,11 +492,14 @@ class Runner:
             )
             self.run(planning_prompt, messages=build_initial_messages(self.repo, planning_prompt))
             artifact = copy.deepcopy(getattr(self, "_finalized_plan_artifact", None))
+            planner_source: Literal["runtime", "fallback"] = "fallback"
             if isinstance(artifact, dict):
                 plan_result = _build_plan_result_from_artifact(instruction, artifact, resolved_answers, evidence_paths)
                 if plan_result is not None:
+                    planner_source = "runtime"
                     if self._mission_dir is not None:
                         (self._mission_dir / "plan_artifact.json").write_text(json.dumps(plan_result.to_dict(), indent=2), encoding="utf-8")
+                    self.event_callback({"type": "plan_finalized", "source": planner_source, "ready_to_execute": plan_result.ready_to_execute})
                     return plan_result
             fallback = _build_emergency_plan_result(
                 instruction,
@@ -508,6 +511,7 @@ class Runner:
             )
             if self._mission_dir is not None:
                 (self._mission_dir / "plan_artifact.json").write_text(json.dumps(fallback.to_dict(), indent=2), encoding="utf-8")
+            self.event_callback({"type": "plan_finalized", "source": planner_source, "ready_to_execute": fallback.ready_to_execute})
             return fallback
         finally:
             self._planning_read_only = False

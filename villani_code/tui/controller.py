@@ -51,6 +51,8 @@ class ControllerAppHost(Protocol):
 
     def get_last_ready_plan(self) -> PlanSessionResult | None: ...
 
+    def set_plan_stage(self, stage: str) -> None: ...
+
 
 @dataclass
 class ApprovalWaiter:
@@ -138,6 +140,11 @@ class RunnerController:
     def _ui_call(self, callback: Any, *args: Any, **kwargs: Any) -> Any:
         return self.app.call_from_thread(callback, *args, **kwargs)
 
+    def _set_plan_stage(self, stage: str) -> None:
+        callback = getattr(self.app, "set_plan_stage", None)
+        if callable(callback):
+            self._ui_call(callback, stage)
+
     def _run_villani_mode_worker(self) -> None:
         self.app.post_message(LogAppend("[villani-mode] Autonomous repo improvement started.", kind="meta"))
         self.app.post_message(SpinnerState(True, None))
@@ -176,6 +183,7 @@ class RunnerController:
 
     def _run_plan_prompt_worker(self, text: str) -> None:
         self.app.post_message(LogAppend(f"> {text}", kind="user"))
+        self._set_plan_stage("planning")
         self.app.post_message(SpinnerState(True, None))
         self.app.post_message(StatusUpdate("Planning"))
         self._assistant_stream_saw_text = False
@@ -197,6 +205,7 @@ class RunnerController:
         if not instruction:
             self.app.post_message(LogAppend("No active planning instruction. Use /plan first.", kind="meta"))
             return
+        self._set_plan_stage("planning")
         self.app.post_message(SpinnerState(True, None))
         self.app.post_message(StatusUpdate("Planning"))
         answers = self._ui_call(self.app.get_plan_answers)
@@ -213,20 +222,28 @@ class RunnerController:
 
     def _run_execute_plan_worker(self) -> None:
         plan = self._ui_call(self.app.get_last_ready_plan)
-        if plan is None:
+        if plan is None or not plan.ready_to_execute:
             self.app.post_message(LogAppend("Cannot execute: no ready plan. Resolve clarifications or run /replan.", kind="meta"))
             return
+        self._set_plan_stage("executing")
         self.app.post_message(LogAppend("> /execute", kind="user"))
         self.app.post_message(SpinnerState(True, None))
         self.app.post_message(StatusUpdate("Executing plan"))
         self._assistant_stream_saw_text = False
-        result = self._runner_run_with_plan(plan)
-        content = result.get("response", {}).get("content", [])
-        response_text = "\n".join(block.get("text", "") for block in content if block.get("type") == "text").strip()
-        if response_text and not self._assistant_stream_saw_text:
-            self.app.post_message(LogAppend(response_text, kind="ai"))
-        self.app.post_message(SpinnerState(False, "Idle"))
-        self.app.post_message(StatusUpdate("Idle"))
+        try:
+            result = self._runner_run_with_plan(plan)
+            content = result.get("response", {}).get("content", [])
+            response_text = "\n".join(block.get("text", "") for block in content if block.get("type") == "text").strip()
+            if response_text and not self._assistant_stream_saw_text:
+                self.app.post_message(LogAppend(response_text, kind="ai"))
+            self._set_plan_stage("idle")
+            self.app.post_message(SpinnerState(False, "Idle"))
+            self.app.post_message(StatusUpdate("Idle"))
+        except Exception:
+            self._set_plan_stage("ready")
+            self.app.post_message(SpinnerState(False, "Execution failed"))
+            self.app.post_message(StatusUpdate("Execution failed"))
+            raise
 
     def _target_for(self, tool_name: str, payload: dict[str, Any]) -> str:
         permissions = getattr(self.runner, "permissions", None)
