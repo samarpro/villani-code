@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from villani_code.permissions import Decision
 from villani_code.plan_session import PlanSessionResult
 from villani_code.state import Runner
@@ -108,6 +110,7 @@ def test_execute_consumes_finalized_plan(monkeypatch, tmp_path: Path) -> None:
 
     def fake_run(instruction: str, **_kwargs):
         captured["instruction"] = instruction
+        captured["force_task_mode"] = _kwargs.get("force_task_mode")
         return {"response": {"content": [{"type": "text", "text": "ok"}]}}
 
     monkeypatch.setattr(runner, "run", fake_run)
@@ -119,8 +122,68 @@ def test_execute_consumes_finalized_plan(monkeypatch, tmp_path: Path) -> None:
         ready_to_execute=True,
     )
     runner.run_with_plan(plan)
-    assert "Approved task summary: summary" in captured["instruction"]
-    assert "Recommended steps:" in captured["instruction"]
+    assert "Objective: summary" in captured["instruction"]
+    assert "Implementation checklist:" in captured["instruction"]
+    assert captured["force_task_mode"].value == "general"
+
+
+def test_run_with_plan_forces_execution_mode_even_if_instruction_has_plan_words(monkeypatch, tmp_path: Path) -> None:
+    runner = Runner(SequencedClient([]), tmp_path, model="demo", stream=False)
+    seen: dict[str, object] = {}
+
+    def fake_run(instruction: str, **kwargs):
+        seen["instruction"] = instruction
+        seen["force_task_mode"] = kwargs.get("force_task_mode")
+        return {"response": {"content": [{"type": "text", "text": "ok"}]}}
+
+    monkeypatch.setattr(runner, "run", fake_run)
+    plan = PlanSessionResult(
+        instruction="inspect current behavior and then execute fix",
+        task_summary="Implement controller fix",
+        recommended_steps=["Edit villani_code/state.py"],
+        assumptions=["carry forward approved constraints"],
+        ready_to_execute=True,
+    )
+    runner.run_with_plan(plan)
+    assert "Implement this approved task now." in str(seen["instruction"])
+    assert seen["force_task_mode"] is not None
+
+
+def test_planning_recovers_strict_json_text_without_submit_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = Runner(SequencedClient([]), tmp_path, model="demo", stream=False)
+
+    payload = {
+        "task_summary": "Build pygame starter game",
+        "candidate_files": ["game.py"],
+        "assumptions": ["pygame available"],
+        "recommended_steps": [
+            "Create game.py with pygame init and main loop",
+            "Implement player movement and simple obstacle collision",
+            "Run python game.py and validate input/movement behavior",
+        ],
+        "open_questions": [],
+    }
+
+    monkeypatch.setattr(
+        runner,
+        "run",
+        lambda *_a, **_k: {"response": {"content": [{"type": "text", "text": __import__("json").dumps(payload)}]}},
+    )
+    result = runner.plan("Build me a pygame game from scratch")
+    assert result.task_summary == "Build pygame starter game"
+    assert result.ready_to_execute is True
+    assert result.confidence_score != 0.35
+
+
+def test_planning_ignores_non_json_prose_when_submit_plan_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = Runner(SequencedClient([]), tmp_path, model="demo", stream=False)
+    monkeypatch.setattr(
+        runner,
+        "run",
+        lambda *_a, **_k: {"response": {"content": [{"type": "text", "text": "I will inspect files and provide a plan soon."}]}}
+    )
+    result = runner.plan("Fix a defect in this repo")
+    assert result.confidence_score == 0.35
 
 
 def test_planning_mode_blocks_write_patch_and_mutating_bash(tmp_path: Path) -> None:

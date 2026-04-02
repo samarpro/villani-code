@@ -384,8 +384,10 @@ def test_run_with_plan_uses_approved_plan_payload(tmp_path: Path) -> None:
         execution_brief="brief",
     )
     runner.run_with_plan(plan)
-    assert "Original instruction: orig" in seen["instruction"]
-    assert "Resolved clarifications:" in seen["instruction"]
+    assert "Original user instruction: orig" in seen["instruction"]
+    assert "Resolved clarifications to honor:" in seen["instruction"]
+    assert "read-only" not in seen["instruction"].lower()
+    assert "should i proceed" not in seen["instruction"].lower()
 
 
 def test_run_with_plan_fails_if_unresolved(tmp_path: Path) -> None:
@@ -581,3 +583,48 @@ def test_plan_flow_from_mixed_narrative_json_renders_only_final_plan(tmp_path: P
     assert "Narrative preface" not in app._log_plain_text
     assert "```json" not in app._log_plain_text
     assert "Suppress planning stream text" in app._log_plain_text
+
+
+def test_greenfield_plan_with_single_candidate_file_is_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = Runner(DummyClient(), tmp_path, model="demo")
+    payload = {
+        "task_summary": "Build a pygame game",
+        "candidate_files": ["game.py"],
+        "assumptions": ["Python and pygame are available"],
+        "recommended_steps": [
+            "Create game.py and initialize pygame display and clock.",
+            "Implement player movement, scoring, and collision logic in game.py.",
+            "Run python game.py and validate controls/render loop behavior.",
+        ],
+        "open_questions": [],
+    }
+    monkeypatch.setattr(
+        runner,
+        "run",
+        lambda *_a, **_k: {"response": {"content": [{"type": "text", "text": __import__("json").dumps(payload)}]}},
+    )
+    result = runner.plan("Build me a pygame game from scratch")
+    assert result.ready_to_execute is True
+    assert result.candidate_files == ["game.py"]
+
+
+def test_repo_fix_still_requires_file_specific_concreteness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = Runner(DummyClient(), tmp_path, model="demo")
+    payload = {
+        "task_summary": "Fix planner bug",
+        "candidate_files": ["villani_code/state.py"],
+        "assumptions": ["Need to inspect runtime behavior"],
+        "recommended_steps": [
+            "Implement the fix safely.",
+            "Run validation and summarize results.",
+            "Update tests accordingly.",
+        ],
+        "open_questions": [],
+    }
+    monkeypatch.setattr(
+        runner,
+        "run",
+        lambda *_a, **_k: {"response": {"content": [{"type": "text", "text": __import__("json").dumps(payload)}]}},
+    )
+    result = runner.plan("Fix the planning bug in this repo")
+    assert result.confidence_score == 0.35

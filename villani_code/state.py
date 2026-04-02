@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -199,11 +200,39 @@ def _normalize_open_questions(raw_questions: Any) -> list[PlanQuestion]:
     return open_questions
 
 
-def _plan_is_concrete_enough(candidate_files: list[str], recommended_steps: list[str]) -> bool:
-    if len(candidate_files) < 2:
+def _is_greenfield_instruction(instruction: str) -> bool:
+    text = instruction.lower()
+    greenfield_markers = (
+        "from scratch",
+        "greenfield",
+        "build me",
+        "create a",
+        "create an",
+        "new project",
+        "new app",
+        "new tool",
+        "empty sandbox",
+    )
+    repo_fix_markers = (
+        "fix",
+        "bug",
+        "failing",
+        "regression",
+        "repo",
+        "existing",
+        "current",
+    )
+    return any(marker in text for marker in greenfield_markers) and not any(marker in text for marker in repo_fix_markers)
+
+
+def _plan_is_concrete_enough(instruction: str, candidate_files: list[str], recommended_steps: list[str]) -> bool:
+    greenfield = _is_greenfield_instruction(instruction)
+    min_candidate_files = 1 if greenfield else 2
+    min_steps = 2 if greenfield else 3
+    if len(candidate_files) < min_candidate_files:
         return False
     lowered_steps = [step.lower() for step in recommended_steps if step.strip()]
-    if len(lowered_steps) < 3:
+    if len(lowered_steps) < min_steps:
         return False
     generic_markers = (
         "inspect architecture",
@@ -213,13 +242,60 @@ def _plan_is_concrete_enough(candidate_files: list[str], recommended_steps: list
         "inspect the repo",
     )
     concrete_hits = 0
+    action_markers = ("create", "implement", "build", "add", "write", "wire", "validate", "run")
+    specificity_markers = (".py", ".md", "test", "command", "function", "module", "file", "pygame", "script")
     for step in lowered_steps:
         has_path = any("/" in token or token.endswith(".py") or token.endswith(".md") for token in step.split())
+        has_action = any(marker in step for marker in action_markers)
+        has_specificity = any(marker in step for marker in specificity_markers)
         if has_path:
+            concrete_hits += 1
+        elif greenfield and has_action and has_specificity:
             concrete_hits += 1
         if any(marker in step for marker in generic_markers) and not has_path:
             return False
+    if greenfield:
+        return concrete_hits >= 2
     return concrete_hits >= 2
+
+
+def _parse_strict_json_object(raw_text: str) -> dict[str, Any] | None:
+    text = raw_text.strip()
+    if not text:
+        return None
+    if text.startswith("```"):
+        match = re.fullmatch(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
+        if not match:
+            return None
+        text = match.group(1).strip()
+    if not text.startswith("{") or not text.endswith("}"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    required = ("task_summary", "candidate_files", "recommended_steps")
+    if not all(key in parsed for key in required):
+        return None
+    return parsed
+
+
+def _extract_strict_json_plan_artifact(run_result: dict[str, Any]) -> dict[str, Any] | None:
+    response = run_result.get("response", {})
+    if not isinstance(response, dict):
+        return None
+    content = response.get("content", [])
+    if not isinstance(content, list):
+        return None
+    for block in reversed(content):
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        parsed = _parse_strict_json_object(str(block.get("text", "")))
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _build_plan_result_from_artifact(
@@ -232,7 +308,7 @@ def _build_plan_result_from_artifact(
     candidate_files = _normalize_plan_text_list(artifact.get("candidate_files", []), limit=16)
     assumptions = _normalize_plan_text_list(artifact.get("assumptions", []), limit=24)
     recommended_steps = _normalize_plan_text_list(artifact.get("recommended_steps", []), limit=24)
-    if not _plan_is_concrete_enough(candidate_files, recommended_steps):
+    if not _plan_is_concrete_enough(instruction, candidate_files, recommended_steps):
         return None
 
     open_questions = _normalize_open_questions(artifact.get("open_questions", []))
@@ -490,8 +566,10 @@ class Runner:
                 validation_steps,
                 resolved_answers,
             )
-            self.run(planning_prompt, messages=build_initial_messages(self.repo, planning_prompt))
+            run_result = self.run(planning_prompt, messages=build_initial_messages(self.repo, planning_prompt))
             artifact = copy.deepcopy(getattr(self, "_finalized_plan_artifact", None))
+            if not isinstance(artifact, dict):
+                artifact = _extract_strict_json_plan_artifact(run_result)
             planner_source: Literal["runtime", "fallback"] = "fallback"
             if isinstance(artifact, dict):
                 plan_result = _build_plan_result_from_artifact(instruction, artifact, resolved_answers, evidence_paths)
@@ -525,7 +603,7 @@ class Runner:
         if self._mission_dir is not None:
             (self._mission_dir / "plan_artifact.json").write_text(json.dumps(plan.to_dict(), indent=2), encoding="utf-8")
         self._update_mission_state(plan_summary=plan.task_summary)
-        return self.run(build_execution_instruction_from_plan(plan))
+        return self.run(build_execution_instruction_from_plan(plan), force_task_mode=TaskMode.GENERAL)
 
     def run_villani_mode(self) -> dict[str, Any]:
         ensure_runtime_dependencies_not_shadowed(self.repo)
@@ -569,12 +647,15 @@ class Runner:
         messages: list[dict[str, Any]] | None = None,
         execution_budget: ExecutionBudget | None = None,
         inject_projected_context: bool = False,
+        force_task_mode: TaskMode | None = None,
     ) -> dict[str, Any]:
         self._ensure_mission(instruction)
         messages = messages or build_initial_messages(self.repo, instruction)
         if inject_projected_context:
             self._inject_projected_context(messages)
-        if self._runtime_mode == "planning":
+        if force_task_mode is not None:
+            self._task_mode = force_task_mode
+        elif self._runtime_mode == "planning":
             self._task_mode = TaskMode.INSPECT_AND_PLAN
         else:
             self._ensure_project_memory_and_plan(instruction)
