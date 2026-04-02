@@ -13,10 +13,14 @@ def _make_fake_claude(tmp_path: Path) -> Path:
     script.write_text(
         """#!/usr/bin/env python3
 import json
+import shlex
 import sys
 from pathlib import Path
 
 args = sys.argv[1:]
+if '--help' in args:
+    print('--bare --settings --include-hook-events --allowedTools --output-format')
+    sys.exit(0)
 prompt = args[-1]
 settings_path = Path(args[args.index('--settings') + 1])
 settings = json.loads(settings_path.read_text(encoding='utf-8'))
@@ -25,8 +29,10 @@ hook_target = None
 for group in settings.get('hooks', {}).values():
     for entry in group:
         command = entry.get('hooks', [{}])[0].get('command')
-        if isinstance(command, list) and command:
-            hook_target = command[-1]
+        if isinstance(command, str) and command:
+            parsed = shlex.split(command)
+            if parsed:
+                hook_target = parsed[2]
 
 if prompt == 'edit-file':
     Path('edited.txt').write_text('edited\\n', encoding='utf-8')
@@ -59,6 +65,7 @@ def _run(tmp_path: Path, prompt: str) -> tuple[Path, object]:
     debug = tmp_path / f"debug-{prompt}"
     debug.mkdir()
     runner = ClaudeCodeAgentRunner()
+    ClaudeCodeAgentRunner._capability_cache = None
     result = runner.run_agent(
         repo_path=repo,
         prompt=prompt,
@@ -128,3 +135,48 @@ def test_claude_adapter_captures_failed_bash_hook(tmp_path: Path, monkeypatch) -
     failures = [event for event in result.events if event.type == "command_failed"]
     assert failures
     assert "boom" in str(failures[0].payload.get("error"))
+
+
+def test_claude_adapter_hook_missing_outputs_are_diagnosed(tmp_path: Path, monkeypatch) -> None:
+    fake_dir = tmp_path / "bin"
+    fake_dir.mkdir()
+    _make_fake_claude(fake_dir)
+    monkeypatch.setenv("PATH", f"{fake_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    _repo, result = _run(tmp_path, "no-op")
+    summary_path = Path(result.debug_artifacts["claude_hook_summary"])
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["events"]["exists"] is False
+    assert summary["errors"]["exists"] is False
+    assert summary["breadcrumbs"]["exists"] is False
+
+
+def test_claude_adapter_deep_debug_writes_stream_events(tmp_path: Path, monkeypatch) -> None:
+    fake_dir = tmp_path / "bin"
+    fake_dir.mkdir()
+    _make_fake_claude(fake_dir)
+    monkeypatch.setenv("PATH", f"{fake_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    repo = tmp_path / "repo-deep"
+    repo.mkdir()
+    debug = tmp_path / "debug-deep"
+    debug.mkdir()
+    runner = ClaudeCodeAgentRunner()
+    ClaudeCodeAgentRunner._capability_cache = None
+    result = runner.run_agent(
+        repo_path=repo,
+        prompt="no-op",
+        model="claude-3-7-sonnet",
+        base_url=None,
+        api_key=None,
+        provider="anthropic",
+        timeout=15,
+        benchmark_config_json='{"claude_deep_debug": true}',
+        debug_dir=debug,
+    )
+    stream_path = Path(result.debug_artifacts["claude_stream_events"])
+    assert stream_path.exists()
+    cmd = (debug / "agent_command.txt").read_text(encoding="utf-8")
+    assert "--output-format stream-json" in cmd
+    assert "--verbose" in cmd
+    assert "--include-hook-events" in cmd
+    assert "--allowedTools Read,Edit,Write,Bash" in cmd
