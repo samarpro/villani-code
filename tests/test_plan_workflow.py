@@ -113,8 +113,8 @@ class PlanningRunnerStub:
             confidence_score=0.7,
         )
 
-    def run(self, instruction: str, messages=None, execution_budget=None):
-        _ = (messages, execution_budget)
+    def run(self, instruction: str, messages=None, execution_budget=None, approved_plan=None):
+        _ = (messages, execution_budget, approved_plan)
         return {"response": {"content": [{"type": "text", "text": instruction}]}}
 
     def run_with_plan(self, plan: PlanSessionResult):
@@ -367,10 +367,12 @@ def test_clarification_only_for_real_design_uncertainty(tmp_path: Path, monkeypa
 
 def test_run_with_plan_uses_approved_plan_payload(tmp_path: Path) -> None:
     runner = Runner(DummyClient(), tmp_path, model="demo")
-    seen: dict[str, str] = {}
+    seen: dict[str, object] = {}
 
-    def fake_run(instruction: str, messages=None, execution_budget=None):
+    def fake_run(instruction: str, messages=None, execution_budget=None, approved_plan=None, force_task_mode=None):
         seen["instruction"] = instruction
+        seen["approved_plan"] = approved_plan
+        seen["force_task_mode"] = force_task_mode
         return {"response": {"content": []}}
 
     runner.run = fake_run  # type: ignore[assignment]
@@ -384,10 +386,9 @@ def test_run_with_plan_uses_approved_plan_payload(tmp_path: Path) -> None:
         execution_brief="brief",
     )
     runner.run_with_plan(plan)
-    assert "Original user instruction: orig" in seen["instruction"]
-    assert "Resolved clarifications to honor:" in seen["instruction"]
-    assert "read-only" not in seen["instruction"].lower()
-    assert "should i proceed" not in seen["instruction"].lower()
+    assert seen["instruction"] == "orig"
+    assert seen["approved_plan"] is plan
+    assert seen["force_task_mode"] is not None
 
 
 def test_run_with_plan_fails_if_unresolved(tmp_path: Path) -> None:
