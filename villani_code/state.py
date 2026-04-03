@@ -232,7 +232,7 @@ def _is_greenfield_instruction(instruction: str) -> bool:
 
 def _plan_is_concrete_enough(instruction: str, candidate_files: list[str], recommended_steps: list[str]) -> bool:
     greenfield = _is_greenfield_instruction(instruction)
-    min_candidate_files = 1 if greenfield else 2
+    min_candidate_files = 0 if greenfield else 2
     min_steps = 2 if greenfield else 3
     if len(candidate_files) < min_candidate_files:
         return False

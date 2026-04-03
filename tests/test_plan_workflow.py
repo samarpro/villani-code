@@ -624,6 +624,29 @@ def test_greenfield_plan_with_single_candidate_file_is_accepted(tmp_path: Path, 
     assert result.candidate_files == ["game.py"]
 
 
+def test_greenfield_plan_can_be_ready_without_candidate_files_when_steps_are_concrete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = Runner(DummyClient(), tmp_path, model="demo")
+    payload = {
+        "task_summary": "Build a pygame game",
+        "candidate_files": [],
+        "assumptions": ["Python and pygame are available"],
+        "recommended_steps": [
+            "Create a pygame main loop with rendering and input handling.",
+            "Implement gameplay state, scoring, and collision behavior.",
+            "Run the game and validate controls, frame loop stability, and scoring logic.",
+        ],
+        "open_questions": [],
+    }
+    monkeypatch.setattr(
+        runner,
+        "run",
+        lambda *_a, **_k: {"response": {"content": [{"type": "text", "text": __import__("json").dumps(payload)}]}},
+    )
+    result = runner.plan("Build me a pygame game from scratch")
+    assert result.ready_to_execute is True
+    assert result.confidence_score != 0.35
+
+
 def test_repo_fix_still_requires_file_specific_concreteness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     runner = Runner(DummyClient(), tmp_path, model="demo")
     payload = {
