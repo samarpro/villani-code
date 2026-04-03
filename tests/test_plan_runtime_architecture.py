@@ -2,18 +2,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from villani_code.permissions import Decision
 from villani_code.plan_session import PlanSessionResult
-from villani_code.state import Runner
+from villani_code.state import Runner, format_plan_text_to_artifact
 from villani_code.state_tooling import execute_tool_with_policy
 
 
 class SequencedClient:
     def __init__(self, responses):
         self.responses = list(responses)
+        self.last_payload = None
 
     def create_message(self, payload, stream=False):
-        _ = (payload, stream)
+        _ = stream
+        self.last_payload = payload
         if not self.responses:
             return {"content": [{"type": "text", "text": "done"}]}
         return self.responses.pop(0)
@@ -67,6 +71,7 @@ def test_plan_finalizes_via_submit_plan_artifact_and_reads_multiple_files(tmp_pa
                             "Update villani_code/state_runtime.py to treat SubmitPlan as explicit finalization",
                             "Add tests in tests/test_plan_runtime_architecture.py for finalization and quality gating",
                         ],
+                        "validation_approach": ["pytest tests/test_plan_runtime_architecture.py"],
                         "open_questions": [],
                         "risk_level": "medium",
                         "confidence_score": 0.9,
@@ -76,30 +81,41 @@ def test_plan_finalizes_via_submit_plan_artifact_and_reads_multiple_files(tmp_pa
         },
     ]
     runner = Runner(SequencedClient(responses), tmp_path, model="demo", stream=False)
-    monkeypatch.setattr("villani_code.state.generate_execution_plan", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("fallback should not be used")))
-
     result = runner.plan("Find the biggest bug in this repo and make a plan to fix it")
     assert result.ready_to_execute is True
     assert "villani_code/state.py" in result.candidate_files
     assert "villani_code/state_runtime.py" in result.candidate_files
 
 
-def test_planning_rejects_generic_artifact(tmp_path: Path, monkeypatch) -> None:
+def test_planning_with_open_questions_is_needs_clarification(tmp_path: Path, monkeypatch) -> None:
     runner = Runner(SequencedClient([]), tmp_path, model="demo", stream=False)
 
     def fake_run(*_a, **_k):
         runner._finalized_plan_artifact = {
-            "task_summary": "generic",
+            "task_summary": "Fix planner bug",
             "candidate_files": ["villani_code/state.py", "villani_code/state_runtime.py"],
             "assumptions": ["a"],
-            "recommended_steps": ["Inspect architecture", "Prioritize findings", "Prepare execution order"],
-            "open_questions": [],
+            "recommended_steps": ["Edit villani_code/state.py", "Update parser", "Run tests"],
+            "validation_approach": ["pytest tests/test_plan_runtime_architecture.py"],
+            "open_questions": [
+                {
+                    "id": "q1",
+                    "question": "Which CLI UX should we preserve?",
+                    "rationale": "Need expected behavior",
+                    "options": [
+                        {"id": "a", "label": "Keep existing", "description": "No behavior changes"},
+                        {"id": "b", "label": "Tighten", "description": "More strict"},
+                        {"id": "c", "label": "Relax", "description": "Less strict"},
+                        {"id": "o", "label": "Other", "description": "Custom", "is_other": True},
+                    ],
+                }
+            ],
         }
         return {"response": {"content": [{"type": "text", "text": "draft"}]}}
 
     monkeypatch.setattr(runner, "run", fake_run)
     result = runner.plan("Find the biggest bug in this repo and make a plan to fix it")
-    assert result.confidence_score == 0.35
+    assert result.ready_to_execute is False
 
 
 def test_execute_consumes_finalized_plan(monkeypatch, tmp_path: Path) -> None:
@@ -108,6 +124,8 @@ def test_execute_consumes_finalized_plan(monkeypatch, tmp_path: Path) -> None:
 
     def fake_run(instruction: str, **_kwargs):
         captured["instruction"] = instruction
+        captured["force_task_mode"] = _kwargs.get("force_task_mode")
+        captured["approved_plan"] = _kwargs.get("approved_plan")
         return {"response": {"content": [{"type": "text", "text": "ok"}]}}
 
     monkeypatch.setattr(runner, "run", fake_run)
@@ -119,8 +137,158 @@ def test_execute_consumes_finalized_plan(monkeypatch, tmp_path: Path) -> None:
         ready_to_execute=True,
     )
     runner.run_with_plan(plan)
-    assert "Approved task summary: summary" in captured["instruction"]
-    assert "Recommended steps:" in captured["instruction"]
+    assert captured["instruction"] == "orig"
+    assert captured["approved_plan"] is plan
+    assert captured["force_task_mode"].value == "general"
+
+
+def test_run_with_plan_forces_execution_mode_even_if_instruction_has_plan_words(monkeypatch, tmp_path: Path) -> None:
+    runner = Runner(SequencedClient([]), tmp_path, model="demo", stream=False)
+    seen: dict[str, object] = {}
+
+    def fake_run(instruction: str, **kwargs):
+        seen["instruction"] = instruction
+        seen["force_task_mode"] = kwargs.get("force_task_mode")
+        seen["approved_plan"] = kwargs.get("approved_plan")
+        return {"response": {"content": [{"type": "text", "text": "ok"}]}}
+
+    monkeypatch.setattr(runner, "run", fake_run)
+    plan = PlanSessionResult(
+        instruction="inspect current behavior and then execute fix",
+        task_summary="Implement controller fix",
+        recommended_steps=["Edit villani_code/state.py"],
+        assumptions=["carry forward approved constraints"],
+        ready_to_execute=True,
+    )
+    runner.run_with_plan(plan)
+    assert str(seen["instruction"]) == "inspect current behavior and then execute fix"
+    assert seen["approved_plan"] is plan
+    assert seen["force_task_mode"] is not None
+
+
+def test_run_injects_approved_plan_context_into_normal_message_flow(tmp_path: Path) -> None:
+    client = SequencedClient([{"content": [{"type": "text", "text": "done"}]}])
+    runner = Runner(client, tmp_path, model="demo", stream=False)
+    plan = PlanSessionResult(
+        instruction="inspect current behavior and plan the fix",
+        task_summary="Implement fix using approved plan",
+        candidate_files=["villani_code/tui/controller.py"],
+        recommended_steps=["Edit controller execute path", "Run tests"],
+        assumptions=["Run validation before completion"],
+        ready_to_execute=True,
+    )
+
+    runner.run(plan.instruction, approved_plan=plan)
+
+    messages = client.last_payload["messages"]
+    user_content = messages[0]["content"]
+    merged = "\n".join(str(block.get("text", "")) for block in user_content if isinstance(block, dict))
+    assert "<approved-plan-context>" in merged
+    assert "Approved objective: Implement fix using approved plan" in merged
+    assert runner._task_mode.value == "general"
+
+
+def test_planning_recovers_strict_json_text_without_submit_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = Runner(SequencedClient([]), tmp_path, model="demo", stream=False)
+
+    payload = {
+        "task_summary": "Build pygame starter game",
+        "candidate_files": ["game.py"],
+        "assumptions": ["pygame available"],
+        "recommended_steps": [
+            "Create game.py with pygame init and main loop",
+            "Implement player movement and simple obstacle collision",
+            "Run python game.py and validate input/movement behavior",
+        ],
+        "validation_approach": ["python game.py"],
+        "open_questions": [],
+    }
+
+    monkeypatch.setattr(
+        runner,
+        "run",
+        lambda *_a, **_k: {"response": {"content": [{"type": "text", "text": __import__("json").dumps(payload)}]}},
+    )
+    result = runner.plan("Build me a pygame game from scratch")
+    assert result.task_summary == "Build pygame starter game"
+    assert result.ready_to_execute is True
+    assert "Create game.py with pygame init and main loop" in result.recommended_steps
+
+
+def test_planning_recovers_plain_text_plan_without_submit_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = Runner(SequencedClient([]), tmp_path, model="demo", stream=False)
+    text = "\n".join(
+        [
+            "Objective: Fix planner readiness behavior",
+            "Files:",
+            "- villani_code/state.py",
+            "- tests/test_plan_runtime_architecture.py",
+            "Steps:",
+            "1. Update villani_code/state.py to parse assistant text into artifact fields.",
+            "2. Keep SubmitPlan optional in villani_code/state.py and preserve strict JSON recovery.",
+            "3. Run pytest tests/test_plan_runtime_architecture.py to validate behavior.",
+            "Validation:",
+            "- pytest tests/test_plan_runtime_architecture.py",
+        ]
+    )
+    monkeypatch.setattr(runner, "run", lambda *_a, **_k: {"response": {"content": [{"type": "text", "text": text}]}})
+    result = runner.plan("Fix a defect in this repo")
+    assert result.task_summary == "Fix planner readiness behavior"
+    assert result.ready_to_execute is True
+    assert "villani_code/state.py" in result.candidate_files
+    assert "pytest tests/test_plan_runtime_architecture.py" in result.assumptions
+
+
+def test_planning_fails_for_unrecoverable_plain_text_without_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = Runner(SequencedClient([]), tmp_path, model="demo", stream=False)
+    monkeypatch.setattr(
+        runner,
+        "run",
+        lambda *_a, **_k: {"response": {"content": [{"type": "text", "text": "I will inspect files and provide a plan soon."}]}}
+    )
+    with pytest.raises(RuntimeError, match="could not recover a structured plan"):
+        runner.plan("Fix a defect in this repo")
+
+
+def test_planning_recovers_bulleted_plain_text_without_headings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = Runner(SequencedClient([]), tmp_path, model="demo", stream=False)
+    text = "\n".join(
+        [
+            "- Implement a pygame game loop in game.py with player movement and collision handling.",
+            "- Add score/lives behavior and restart flow in game.py.",
+            "- Run python game.py and validate controls plus collision outcomes.",
+            "- Run pytest tests/test_plan_runtime_architecture.py for regression coverage.",
+        ]
+    )
+    monkeypatch.setattr(runner, "run", lambda *_a, **_k: {"response": {"content": [{"type": "text", "text": text}]}})
+    result = runner.plan("I need to make a fun python game using pygame")
+    assert result.recommended_steps
+    assert result.ready_to_execute is True
+    assert any("pytest" in item.lower() or "validate" in item.lower() for item in result.assumptions)
+
+
+def test_format_plan_text_to_artifact_recovers_core_fields() -> None:
+    text = "\n".join(
+        [
+            "Objective: Stabilize planning conversion",
+            "Files:",
+            "- villani_code/state.py",
+            "- tests/test_plan_workflow.py",
+            "Steps:",
+            "- Update plan parser in runtime.",
+            "- Add tests for plain-text plan recovery.",
+            "Validation:",
+            "- pytest tests/test_plan_workflow.py",
+            "Open Questions:",
+            "- Should recovery tolerate missing headings?",
+        ]
+    )
+    artifact = format_plan_text_to_artifact("Fallback objective", text)
+    assert artifact["task_summary"] == "Stabilize planning conversion"
+    assert "villani_code/state.py" in artifact["candidate_files"]
+    assert artifact["recommended_steps"]
+    assert any("pytest" in item for item in artifact["assumptions"])
+    assert artifact["open_questions"]
 
 
 def test_planning_mode_blocks_write_patch_and_mutating_bash(tmp_path: Path) -> None:

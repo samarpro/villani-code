@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from rich.text import Text
 from textual import on
@@ -33,6 +34,18 @@ class InteractionMode(str, Enum):
     APPROVAL = "approval"
     CLARIFICATION = "clarification"
     SLASH = "slash"
+
+
+PlanStage = Literal["idle", "awaiting_prompt", "planning", "awaiting_clarification", "ready", "executing"]
+
+
+@dataclass(slots=True)
+class PlanningSessionState:
+    instruction: str = ""
+    latest_result: PlanSessionResult | None = None
+    answers: list[PlanAnswer] = field(default_factory=list)
+    last_ready_plan: PlanSessionResult | None = None
+    stage: PlanStage = "idle"
 
 
 def _render_plan_lines(result: PlanSessionResult) -> list[str]:
@@ -123,15 +136,7 @@ class VillaniTUI(App[None]):
         self.controller = RunnerController(runner, self)
         self.command_palette = CommandPalette()
 
-        self.plan_mode_enabled = False
-        self.plan_session_active = False
-        self.awaiting_plan_prompt = False
-        self.pending_plan_instruction = ""
-        self.current_plan_result: PlanSessionResult | None = None
-        self.pending_questions: list[PlanQuestion] = []
-        self.question_cursor = 0
-        self.captured_answers: list[PlanAnswer] = []
-        self.last_ready_plan: PlanSessionResult | None = None
+        self.planning_session = PlanningSessionState()
         self._interaction_mode = InteractionMode.NORMAL
 
     def compose(self) -> ComposeResult:
@@ -162,23 +167,63 @@ class VillaniTUI(App[None]):
             self._append_log_line(log, "Ready. Type /help for commands.")
             self.query_one(Input).focus()
         self.query_one(StatusBarWidget).set_follow_mode(self.follow_tail)
-        self.query_one(StatusBarWidget).set_plan_mode(self.plan_mode_enabled)
+        self.query_one(StatusBarWidget).set_plan_mode(self._is_plan_mode_active())
+
+    def _is_plan_mode_active(self) -> bool:
+        return self.planning_session.stage in {"awaiting_prompt", "planning", "awaiting_clarification"}
+
+    def _set_plan_stage(self, stage: PlanStage) -> None:
+        self.planning_session.stage = stage
+        try:
+            self.query_one(StatusBarWidget).set_plan_mode(self._is_plan_mode_active())
+        except NoMatches:
+            pass
+
+    def set_plan_stage(self, stage: str) -> None:
+        self._set_plan_stage(stage)  # type: ignore[arg-type]
+
+    def _clear_plan_session(self, keep_last_ready_plan: bool = False) -> None:
+        last_ready = self.planning_session.last_ready_plan if keep_last_ready_plan else None
+        self.planning_session = PlanningSessionState(last_ready_plan=last_ready)
+
+    def _status_widget(self) -> StatusBarWidget | None:
+        try:
+            return self.query_one(StatusBarWidget)
+        except NoMatches:
+            return None
+
+    def _question_widget(self) -> PlanQuestionWidget | None:
+        try:
+            return self.query_one(PlanQuestionWidget)
+        except NoMatches:
+            return None
 
     def apply_plan_result(self, result: PlanSessionResult, reset_answers: bool) -> None:
-        self.current_plan_result = result
-        self.plan_session_active = True
-        self.awaiting_plan_prompt = False
-        self.plan_mode_enabled = bool(result.open_questions)
-        self.pending_questions = list(result.open_questions)
-        self.question_cursor = len(self.captured_answers)
         if reset_answers:
-            self.captured_answers = []
-            self.question_cursor = 0
+            self.planning_session.answers = []
+        self.planning_session.latest_result = result
+        if not self.planning_session.instruction:
+            self.planning_session.instruction = result.instruction
         if result.ready_to_execute:
-            self.last_ready_plan = result
+            self.planning_session.last_ready_plan = result
         self._log_local_meta("\n".join(_render_plan_lines(result)))
-        self._show_current_question_or_finalize()
-        self.query_one(StatusBarWidget).set_plan_mode(bool(result.open_questions))
+        if result.open_questions:
+            self._set_plan_stage("awaiting_clarification")
+            self._show_current_question()
+            status = self._status_widget()
+            if status is not None:
+                status.set_status("Plan awaiting clarification")
+            return
+        question = self._question_widget()
+        if question is not None:
+            question.hide_question()
+        self._set_plan_stage("ready" if result.ready_to_execute else "idle")
+        self._enter_normal_mode()
+        if result.ready_to_execute:
+            status = self._status_widget()
+            if status is not None:
+                status.set_status("Plan ready")
+            self._log_local_meta("Plan ready. Run /execute to implement.")
 
     def _set_interaction_mode(self, mode: InteractionMode) -> None:
         self._interaction_mode = mode
@@ -225,42 +270,33 @@ class VillaniTUI(App[None]):
         if self._interaction_mode == InteractionMode.SLASH:
             self._set_interaction_mode(InteractionMode.NORMAL)
 
-    def _show_current_question_or_finalize(self) -> None:
-        widget = self.query_one(PlanQuestionWidget)
-        if self.question_cursor < len(self.pending_questions):
-            question = self.pending_questions[self.question_cursor]
-            lines = [
-                f"Clarification {self.question_cursor + 1}/{len(self.pending_questions)}: {question.question}",
-                *[f"[{idx}] {option.label}" for idx, option in enumerate(question.options, start=1)],
-            ]
-            self._log_local_meta("\n".join(lines))
-            self.query_one(StatusBarWidget).set_status("Plan awaiting clarification")
-            self._enter_clarification_mode(question)
+    def _show_current_question(self) -> None:
+        result = self.planning_session.latest_result
+        if result is None or not result.open_questions:
             return
-        widget.hide_question()
-        self._enter_normal_mode()
-        if self.current_plan_result and self.current_plan_result.ready_to_execute:
-            self.plan_mode_enabled = False
-            self.plan_session_active = False
-            self.query_one(StatusBarWidget).set_status("Plan ready")
-            self.query_one(StatusBarWidget).set_plan_mode(False)
-            self._log_local_meta("Plan ready. Run /execute to implement.")
+        answered_ids = {answer.question_id for answer in self.planning_session.answers}
+        question_index = next((idx for idx, question in enumerate(result.open_questions) if question.id not in answered_ids), 0)
+        question = result.open_questions[question_index]
+        lines = [
+            f"Clarification {question_index + 1}/{len(result.open_questions)}: {question.question}",
+            *[f"[{idx}] {option.label}" for idx, option in enumerate(question.options, start=1)],
+        ]
+        self._log_local_meta("\n".join(lines))
+        self._enter_clarification_mode(question)
 
     def record_plan_answer(self, answer: PlanAnswer) -> None:
-        self.captured_answers.append(answer)
-        self.question_cursor += 1
+        self.planning_session.answers.append(answer)
+        self._set_plan_stage("planning")
         self._log_local_meta(f"Answer recorded for {answer.question_id}: {answer.selected_option_id}")
 
     def get_plan_instruction(self) -> str:
-        return self.pending_plan_instruction
+        return self.planning_session.instruction
 
     def get_plan_answers(self) -> list[PlanAnswer]:
-        return list(self.captured_answers)
+        return list(self.planning_session.answers)
 
     def get_last_ready_plan(self) -> PlanSessionResult | None:
-        if self.current_plan_result and self.current_plan_result.ready_to_execute:
-            return self.current_plan_result
-        return self.last_ready_plan
+        return self.planning_session.last_ready_plan
 
     def _append_log(self, log: VillaniTranscript, text: str) -> None:
         log.append_text(text, follow_tail=self.follow_tail)
@@ -329,42 +365,45 @@ class VillaniTUI(App[None]):
             self._show_help()
             return
         if trigger == "/plan":
-            self.awaiting_plan_prompt = True
-            self.plan_mode_enabled = True
-            self.plan_session_active = False
+            self._clear_plan_session()
+            self._set_plan_stage("awaiting_prompt")
             self._log_local_meta("Enter a planning prompt for read-only plan generation.")
-            status = self.query_one(StatusBarWidget)
-            status.set_status("Awaiting plan prompt")
-            status.set_plan_mode(True)
+            status = self._status_widget()
+            if status is not None:
+                status.set_status("Awaiting plan prompt")
             return
         if trigger == "/cancelplan":
-            self.plan_session_active = False
-            self.awaiting_plan_prompt = False
-            self.pending_plan_instruction = ""
-            self.current_plan_result = None
-            self.pending_questions = []
-            self.question_cursor = 0
-            self.captured_answers = []
-            self.last_ready_plan = None
-            self.query_one(PlanQuestionWidget).hide_question()
+            self._clear_plan_session()
+            self._set_plan_stage("idle")
+            question = self._question_widget()
+            if question is not None:
+                question.hide_question()
             self._enter_normal_mode()
-            status = self.query_one(StatusBarWidget)
-            status.set_status("Plan canceled")
-            status.set_plan_mode(False)
+            status = self._status_widget()
+            if status is not None:
+                status.set_status("Plan canceled")
             self._log_local_meta("Planning session canceled.")
             return
         if trigger == "/replan":
+            if not self.planning_session.instruction:
+                self._log_local_meta("No active planning instruction. Use /plan first.")
+                return
+            self._set_plan_stage("planning")
             self.controller.replan()
             return
         if trigger == "/execute":
-            if self.current_plan_result and not self.current_plan_result.ready_to_execute:
-                self._log_local_meta("Cannot execute: unresolved clarifications. Finish answers or use /replan.")
+            plan = self.get_last_ready_plan()
+            if (
+                self.planning_session.stage != "ready"
+                or plan is None
+                or not plan.ready_to_execute
+            ):
+                self._log_local_meta("Cannot execute: no ready plan. Resolve clarifications or run /replan.")
                 return
-            self.awaiting_plan_prompt = False
-            self.plan_mode_enabled = False
-            self.plan_session_active = False
-            self.query_one(StatusBarWidget).set_plan_mode(False)
-            self.query_one(PlanQuestionWidget).hide_question()
+            self._set_plan_stage("executing")
+            question = self._question_widget()
+            if question is not None:
+                question.hide_question()
             self._enter_normal_mode()
             self.controller.run_execute_plan()
             return
@@ -376,14 +415,13 @@ class VillaniTUI(App[None]):
         self._log_local_meta(f"{trigger} is not implemented yet in this build.")
 
     def _start_plan(self, prompt: str) -> None:
-        self.awaiting_plan_prompt = False
-        self.plan_mode_enabled = True
-        self.plan_session_active = True
-        self.pending_plan_instruction = prompt
+        self._clear_plan_session()
+        self.planning_session.instruction = prompt
+        self._set_plan_stage("planning")
         self._log_local_meta("Creating read-only implementation plan...")
-        status = self.query_one(StatusBarWidget)
-        status.set_status("Planning")
-        status.set_plan_mode(True)
+        status = self._status_widget()
+        if status is not None:
+            status.set_status("Planning")
         self.controller.run_plan_prompt(prompt)
 
     def _show_help(self) -> None:
@@ -425,7 +463,7 @@ class VillaniTUI(App[None]):
             self._restore_input_focus()
             return
         self._interrupts.reset_interrupt_state()
-        if self.awaiting_plan_prompt:
+        if self.planning_session.stage == "awaiting_prompt":
             self._start_plan(text)
             return
         self.controller.run_prompt(text)

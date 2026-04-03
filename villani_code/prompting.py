@@ -110,10 +110,11 @@ def build_planning_instruction(
             "Create an implementation plan in read-only inspection mode.",
             "Use the normal runtime loop: inspect files, search, reason, and iterate until the plan is concrete.",
             "Do not edit files, do not run mutating commands, and do not perform git mutations.",
-            "When the plan is concrete, finalize by calling the SubmitPlan tool.",
-            "SubmitPlan input must include: task_summary, candidate_files, assumptions, recommended_steps, open_questions, risk_level, confidence_score.",
+            "Return the final plan in plain text. Prefer stable headings when practical: Objective, Files, Steps, Validation, Open Questions.",
+            "Heading format is guidance for readability, not a strict schema contract.",
+            "SubmitPlan is optional: call it only if you choose to, otherwise provide the complete plan in assistant text.",
             "Clarifying questions are allowed only for true design forks. Each question must include exactly 4 options with exactly one option labeled Other.",
-            "Do not return planning JSON in assistant prose; use SubmitPlan for finalization.",
+            "Do not rely on strict JSON formatting.",
             "Planning context JSON:",
             json.dumps(payload, indent=2),
         ]
@@ -128,17 +129,51 @@ def build_execution_instruction_from_plan(plan: PlanSessionResult) -> str:
             text += f" (other={answer.other_text.strip()})"
         answers.append(text)
     sections = [
-        f"Original instruction: {plan.instruction}",
-        f"Approved task summary: {plan.task_summary}",
-        "Recommended steps:",
+        "Implement this approved task now.",
+        f"Objective: {plan.task_summary}",
+        f"Original user instruction: {plan.instruction}",
+        "Implementation checklist:",
         *[f"- {step}" for step in plan.recommended_steps],
-        "Assumptions and constraints:",
+        "Constraints and assumptions:",
         *[f"- {item}" for item in plan.assumptions],
-        "Resolved clarifications:",
+        "Resolved clarifications to honor:",
         *([f"- {item}" for item in answers] if answers else ["- none"]),
-        "Execute the approved plan now. Do not re-plan from scratch unless blocked by new evidence.",
+        "Execution requirements:",
+        "- Make the required file edits directly.",
+        "- Run targeted validation for modified behavior.",
+        "- Summarize concrete changes and validation results at the end.",
     ]
     return "\n".join(sections)
+
+
+def build_approved_plan_context(plan: PlanSessionResult) -> str:
+    answers = []
+    for answer in plan.resolved_answers:
+        text = f"{answer.question_id}: {answer.selected_option_id}"
+        if answer.other_text.strip():
+            text += f" (other={answer.other_text.strip()})"
+        answers.append(text)
+
+    lines = [
+        "<approved-plan-context>",
+        "This plan is approved and ready for implementation.",
+        f"Approved objective: {plan.task_summary}",
+        "Candidate files:",
+        *([f"- {path}" for path in plan.candidate_files] if plan.candidate_files else ["- none specified"]),
+        "Recommended steps:",
+        *([f"- {step}" for step in plan.recommended_steps] if plan.recommended_steps else ["- none specified"]),
+        "Validation expectations and constraints:",
+        *([f"- {item}" for item in plan.assumptions] if plan.assumptions else ["- none specified"]),
+        "Resolved clarifications:",
+        *([f"- {item}" for item in answers] if answers else ["- none"]),
+        "Execution guidance:",
+        "- Implement directly; do not switch into read-only planning mode.",
+        "- Follow the approved plan unless repository evidence requires adjustment.",
+        "- Avoid re-planning from scratch.",
+        "- Run and report validation before completion.",
+        "</approved-plan-context>",
+    ]
+    return "\n".join(lines)
 
 
 def build_solution_planning_messages(

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import time
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
 from rich.console import Console
 
@@ -22,8 +23,13 @@ from villani_code.hooks import HookRunner
 from villani_code.mcp import load_mcp_config
 from villani_code.permissions import Decision, PermissionConfig, PermissionEngine
 from villani_code.plan_session import PlanAnswer, PlanOption, PlanQuestion, PlanSessionResult
-from villani_code.prompting import build_execution_instruction_from_plan, build_initial_messages, build_planning_instruction, build_system_blocks
-from villani_code.planning import TaskMode, classify_task_mode, generate_execution_plan
+from villani_code.prompting import (
+    build_approved_plan_context,
+    build_initial_messages,
+    build_planning_instruction,
+    build_system_blocks,
+)
+from villani_code.planning import TaskMode, classify_task_mode
 from villani_code.benchmark.runtime_config import BenchmarkRuntimeConfig
 from villani_code.llm_client import LLMClient
 from villani_code.runtime_safety import ensure_runtime_dependencies_not_shadowed
@@ -199,27 +205,160 @@ def _normalize_open_questions(raw_questions: Any) -> list[PlanQuestion]:
     return open_questions
 
 
-def _plan_is_concrete_enough(candidate_files: list[str], recommended_steps: list[str]) -> bool:
-    if len(candidate_files) < 2:
-        return False
-    lowered_steps = [step.lower() for step in recommended_steps if step.strip()]
-    if len(lowered_steps) < 3:
-        return False
-    generic_markers = (
-        "inspect architecture",
-        "review rendering",
-        "prioritize findings",
-        "prepare execution order",
-        "inspect the repo",
+def _normalize_validation_items(artifact: dict[str, Any]) -> list[str]:
+    return _normalize_plan_text_list(
+        artifact.get("validation_approach", artifact.get("validation", [])),
+        limit=16,
     )
-    concrete_hits = 0
-    for step in lowered_steps:
-        has_path = any("/" in token or token.endswith(".py") or token.endswith(".md") for token in step.split())
-        if has_path:
-            concrete_hits += 1
-        if any(marker in step for marker in generic_markers) and not has_path:
-            return False
-    return concrete_hits >= 2
+
+
+def _is_coherent_plan_artifact(artifact: dict[str, Any], instruction: str) -> bool:
+    task_summary = str(artifact.get("task_summary", "")).strip() or instruction.strip()
+    steps = _normalize_plan_text_list(artifact.get("recommended_steps", []), limit=24)
+    open_questions = _normalize_open_questions(artifact.get("open_questions", []))
+    validation_items = _normalize_validation_items(artifact)
+    return bool(task_summary and (steps or open_questions or validation_items))
+
+
+def _parse_strict_json_object(raw_text: str) -> dict[str, Any] | None:
+    text = raw_text.strip()
+    if not text:
+        return None
+    if text.startswith("```"):
+        match = re.fullmatch(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
+        if not match:
+            return None
+        text = match.group(1).strip()
+    if not text.startswith("{") or not text.endswith("}"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    required = ("task_summary", "candidate_files", "recommended_steps")
+    if not all(key in parsed for key in required):
+        return None
+    return parsed
+
+
+def _extract_strict_json_plan_artifact(run_result: dict[str, Any]) -> dict[str, Any] | None:
+    response = run_result.get("response", {})
+    if not isinstance(response, dict):
+        return None
+    content = response.get("content", [])
+    if not isinstance(content, list):
+        return None
+    for block in reversed(content):
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        parsed = _parse_strict_json_object(str(block.get("text", "")))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _extract_assistant_plan_text(run_result: dict[str, Any]) -> str:
+    response = run_result.get("response", {})
+    if not isinstance(response, dict):
+        return ""
+    content = response.get("content", [])
+    if not isinstance(content, list):
+        return ""
+    blocks: list[str] = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text = str(block.get("text", "")).strip()
+        if text:
+            blocks.append(text)
+    return "\n".join(blocks).strip()
+
+
+def format_plan_text_to_artifact(instruction: str, plan_text: str) -> dict[str, Any]:
+    lines = [line.rstrip() for line in plan_text.splitlines()]
+    heading_aliases = {
+        "objective": "objective",
+        "files": "files",
+        "candidate files": "files",
+        "steps": "steps",
+        "recommended steps": "steps",
+        "implementation steps": "steps",
+        "validation": "validation",
+        "open questions": "open_questions",
+        "questions": "open_questions",
+        "assumptions": "assumptions",
+        "risks": "assumptions",
+    }
+    section = "general"
+    sections: dict[str, list[str]] = {name: [] for name in ("objective", "files", "steps", "validation", "open_questions", "assumptions", "general")}
+    general_bullets: list[str] = []
+    bullet_pattern = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.*)$")
+    file_pattern = re.compile(r"(?:[\w./-]+/)*[\w.-]+\.(?:py|md|txt|json|ya?ml|toml|ini|cfg|sh|js|ts|tsx|jsx|css|html|sql|rst)")
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        heading_match = re.match(r"^(Objective|Files|Candidate Files|Steps|Recommended Steps|Implementation Steps|Validation|Open Questions|Questions|Assumptions|Risks)\s*:\s*(.*)$", line, flags=re.IGNORECASE)
+        if heading_match:
+            section = heading_aliases.get(heading_match.group(1).strip().lower(), "general")
+            remainder = heading_match.group(2).strip()
+            if remainder:
+                sections[section].append(remainder)
+            continue
+        bullet_match = bullet_pattern.match(line)
+        entry = bullet_match.group(1).strip() if bullet_match else line
+        sections[section].append(entry)
+        if bullet_match and section == "general":
+            general_bullets.append(entry)
+
+    objective = " ".join(sections["objective"]).strip() or instruction.strip()
+    candidate_files = _dedupe_preserve(
+        [match.group(0) for text in (sections["files"] + sections["general"] + sections["steps"]) for match in file_pattern.finditer(text)]
+    )[:16]
+    recommended_steps = _dedupe_preserve([step for step in sections["steps"] if step])[:24]
+    if not recommended_steps:
+        recommended_steps = _dedupe_preserve(general_bullets)[:24]
+
+    validation_items = [item for item in sections["validation"] if item]
+    if not validation_items:
+        validation_markers = ("pytest", "unittest", "tox", "nox", "mypy", "ruff", "test", "validate", "verification")
+        derived_validation: list[str] = []
+        for item in [*recommended_steps, *sections["general"]]:
+            lowered = item.lower()
+            if any(marker in lowered for marker in validation_markers):
+                derived_validation.append(item)
+        validation_items = _dedupe_preserve(derived_validation)[:16]
+    open_question_lines = [item for item in sections["open_questions"] if item]
+    open_questions = []
+    for idx, question_text in enumerate(open_question_lines[:3], start=1):
+        if "?" not in question_text:
+            continue
+        open_questions.append(
+            {
+                "id": f"q{idx}",
+                "question": question_text,
+                "rationale": "Clarification required before execution.",
+                "options": [
+                    {"id": f"q{idx}_opt1", "label": "Option 1", "description": "", "is_other": False},
+                    {"id": f"q{idx}_opt2", "label": "Option 2", "description": "", "is_other": False},
+                    {"id": f"q{idx}_opt3", "label": "Option 3", "description": "", "is_other": False},
+                    {"id": f"q{idx}_opt4", "label": "Other", "description": "", "is_other": True},
+                ],
+            }
+        )
+
+    assumptions = _dedupe_preserve([*sections["assumptions"], *validation_items, *sections["general"]])[:24]
+    return {
+        "task_summary": objective,
+        "candidate_files": candidate_files,
+        "assumptions": assumptions,
+        "recommended_steps": recommended_steps,
+        "validation_approach": validation_items,
+        "open_questions": open_questions,
+    }
 
 
 def _build_plan_result_from_artifact(
@@ -232,15 +371,18 @@ def _build_plan_result_from_artifact(
     candidate_files = _normalize_plan_text_list(artifact.get("candidate_files", []), limit=16)
     assumptions = _normalize_plan_text_list(artifact.get("assumptions", []), limit=24)
     recommended_steps = _normalize_plan_text_list(artifact.get("recommended_steps", []), limit=24)
-    if not _plan_is_concrete_enough(candidate_files, recommended_steps):
+    validation_items = _normalize_validation_items(artifact)
+    if not _is_coherent_plan_artifact(artifact, instruction):
         return None
 
     open_questions = _normalize_open_questions(artifact.get("open_questions", []))
-    assumptions.extend([f"Evidence inspected: {path}" for path in evidence_paths[:8]])
+    assumptions.extend(validation_items)
+    assumptions.extend(f"Evidence inspected: {path}" for path in evidence_paths[:8])
     assumptions.extend(_format_answer(answer) for answer in resolved_answers)
     assumptions = _dedupe_preserve(assumptions)
 
-    ready = not open_questions
+    has_required_execution_detail = bool(recommended_steps and validation_items)
+    ready = has_required_execution_detail and not open_questions
     brief = "\n".join([task_summary, *recommended_steps])
     return PlanSessionResult(
         instruction=instruction,
@@ -254,41 +396,6 @@ def _build_plan_result_from_artifact(
         execution_brief=brief,
         risk_level=str(artifact.get("risk_level", "medium")),
         confidence_score=float(artifact.get("confidence_score", 0.65) or 0.65),
-    )
-
-
-def _build_emergency_plan_result(
-    instruction: str,
-    self_repo: Path,
-    repo_map: dict[str, Any],
-    validation_steps: list[str],
-    evidence_paths: list[str],
-    resolved_answers: list[PlanAnswer],
-) -> PlanSessionResult:
-    execution_plan = generate_execution_plan(instruction, self_repo, repo_map, validation_steps)
-    candidate_files = _dedupe_preserve([str(path) for path in repo_map.get("likely_entrypoints", [])])[:8]
-    steps = [
-        "Inspect the highest-signal failing path first and confirm the exact defect with Read/Grep.",
-        "Draft the smallest ordered edit list with exact files and expected behavior changes.",
-        "Define targeted validation commands and escalation criteria before /execute.",
-    ]
-    assumptions = _dedupe_preserve([
-        "Planning mode remained read-only.",
-        *[f"Evidence inspected: {path}" for path in evidence_paths[:8]],
-        *[_format_answer(answer) for answer in resolved_answers],
-    ])
-    return PlanSessionResult(
-        instruction=instruction,
-        task_summary=instruction.strip() or execution_plan.task_goal,
-        candidate_files=candidate_files,
-        assumptions=assumptions,
-        recommended_steps=steps,
-        open_questions=[],
-        resolved_answers=resolved_answers,
-        ready_to_execute=True,
-        execution_brief="\n".join([instruction.strip(), *steps]),
-        risk_level=execution_plan.risk_level.value,
-        confidence_score=0.35,
     )
 
 
@@ -490,25 +597,30 @@ class Runner:
                 validation_steps,
                 resolved_answers,
             )
-            self.run(planning_prompt, messages=build_initial_messages(self.repo, planning_prompt))
+            run_result = self.run(planning_prompt, messages=build_initial_messages(self.repo, planning_prompt))
             artifact = copy.deepcopy(getattr(self, "_finalized_plan_artifact", None))
+            if not isinstance(artifact, dict):
+                artifact = _extract_strict_json_plan_artifact(run_result)
+            if not isinstance(artifact, dict):
+                assistant_text = _extract_assistant_plan_text(run_result)
+                artifact = format_plan_text_to_artifact(instruction, assistant_text) if assistant_text else None
             if isinstance(artifact, dict):
                 plan_result = _build_plan_result_from_artifact(instruction, artifact, resolved_answers, evidence_paths)
                 if plan_result is not None:
                     if self._mission_dir is not None:
                         (self._mission_dir / "plan_artifact.json").write_text(json.dumps(plan_result.to_dict(), indent=2), encoding="utf-8")
+                    self.event_callback({"type": "plan_finalized", "source": "runtime", "ready_to_execute": plan_result.ready_to_execute})
                     return plan_result
-            fallback = _build_emergency_plan_result(
-                instruction,
-                self.repo,
-                repo_map,
-                validation_steps,
-                evidence_paths,
-                resolved_answers,
+            message = "Planning failed: could not recover a structured plan from model output."
+            self.event_callback(
+                {
+                    "type": "plan_failed",
+                    "reason": "could_not_recover_structured_plan",
+                    "message": message,
+                    "ready_to_execute": False,
+                }
             )
-            if self._mission_dir is not None:
-                (self._mission_dir / "plan_artifact.json").write_text(json.dumps(fallback.to_dict(), indent=2), encoding="utf-8")
-            return fallback
+            raise RuntimeError(message)
         finally:
             self._planning_read_only = False
             self._runtime_mode = "execution"
@@ -521,7 +633,7 @@ class Runner:
         if self._mission_dir is not None:
             (self._mission_dir / "plan_artifact.json").write_text(json.dumps(plan.to_dict(), indent=2), encoding="utf-8")
         self._update_mission_state(plan_summary=plan.task_summary)
-        return self.run(build_execution_instruction_from_plan(plan))
+        return self.run(plan.instruction, approved_plan=plan, force_task_mode=TaskMode.GENERAL)
 
     def run_villani_mode(self) -> dict[str, Any]:
         ensure_runtime_dependencies_not_shadowed(self.repo)
@@ -565,12 +677,29 @@ class Runner:
         messages: list[dict[str, Any]] | None = None,
         execution_budget: ExecutionBudget | None = None,
         inject_projected_context: bool = False,
+        force_task_mode: TaskMode | None = None,
+        approved_plan: PlanSessionResult | None = None,
     ) -> dict[str, Any]:
+        if approved_plan is not None and not approved_plan.ready_to_execute:
+            raise RuntimeError("Approved plan is not ready to execute; unresolved clarifications remain.")
         self._ensure_mission(instruction)
         messages = messages or build_initial_messages(self.repo, instruction)
+        if approved_plan is not None:
+            if self._mission_dir is not None:
+                (self._mission_dir / "plan_artifact.json").write_text(json.dumps(approved_plan.to_dict(), indent=2), encoding="utf-8")
+            self._update_mission_state(plan_summary=approved_plan.task_summary)
+            approved_plan_block = {"type": "text", "text": build_approved_plan_context(approved_plan)}
+            if messages and messages[0].get("role") == "user" and isinstance(messages[0].get("content"), list):
+                messages[0]["content"].append(approved_plan_block)
+            else:
+                messages.append({"role": "user", "content": [approved_plan_block]})
         if inject_projected_context:
             self._inject_projected_context(messages)
-        if self._runtime_mode == "planning":
+        if force_task_mode is not None:
+            self._task_mode = force_task_mode
+        elif approved_plan is not None:
+            self._task_mode = TaskMode.GENERAL
+        elif self._runtime_mode == "planning":
             self._task_mode = TaskMode.INSPECT_AND_PLAN
         else:
             self._ensure_project_memory_and_plan(instruction)
