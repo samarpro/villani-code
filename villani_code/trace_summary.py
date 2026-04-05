@@ -172,6 +172,12 @@ def _truncate(value: Any, limit: int = 240) -> str:
     return text[:limit]
 
 
+def _bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    return default
+
+
 def _infer_tool_category(name: str) -> str:
     lowered = name.lower()
     if lowered in {"write", "patch", "edit"}:
@@ -192,7 +198,11 @@ def build_tool_call_records_from_events(run_dir: Path) -> tuple[list[dict[str, A
     validation_errors: list[str] = []
 
     started: dict[str, dict[str, Any]] = {}
-    records: list[dict[str, Any]] = []
+    terminal_by_id: dict[str, dict[str, Any]] = {}
+    command_by_tool_id: dict[str, dict[str, Any]] = {}
+    file_event_by_tool_id: dict[str, dict[str, Any]] = {}
+    command_tool_ids: set[str] = set()
+    file_tool_ids: set[str] = set()
 
     for event in events:
         event_type = str(event.get("event_type") or event.get("type") or "")
@@ -219,34 +229,86 @@ def build_tool_call_records_from_events(run_dir: Path) -> tuple[list[dict[str, A
             }
             continue
 
-        if event_type not in {"tool_call_completed", "tool_call_failed"}:
+        if event_type in {"tool_call_completed", "tool_call_failed"}:
+            tool_call_id = str(payload.get("tool_call_id", "")).strip()
+            if not tool_call_id:
+                validation_errors.append(f"{event_type} missing tool_call_id")
+                continue
+            if tool_call_id in terminal_by_id:
+                validation_errors.append(f"duplicate terminal tool event for tool_call_id={tool_call_id}")
+                continue
+            terminal_by_id[tool_call_id] = event
             continue
 
-        tool_call_id = str(payload.get("tool_call_id", "")).strip()
-        if not tool_call_id:
-            validation_errors.append(f"{event_type} missing tool_call_id")
+        if event_type == "command_started":
+            tool_call_id = str(payload.get("tool_call_id", "")).strip()
+            if not tool_call_id:
+                continue
+            command_tool_ids.add(tool_call_id)
+            command_by_tool_id.setdefault(tool_call_id, {}).update(
+                {
+                    "command": payload.get("command"),
+                    "cwd": payload.get("cwd"),
+                }
+            )
             continue
-        start = started.pop(tool_call_id, None)
-        if start is None:
+        if event_type == "command_finished":
+            tool_call_id = str(payload.get("tool_call_id", "")).strip()
+            if not tool_call_id:
+                continue
+            command_tool_ids.add(tool_call_id)
+            command_by_tool_id.setdefault(tool_call_id, {}).update(
+                {
+                    "command": payload.get("command"),
+                    "cwd": payload.get("cwd"),
+                    "exit_code": payload.get("exit_code"),
+                    "stdout_preview": _truncate(payload.get("stdout"), 240),
+                    "stderr_preview": _truncate(payload.get("stderr"), 240),
+                    "stdout_truncated": _bool(payload.get("stdout_truncated"), _bool(payload.get("truncated"), False)),
+                    "stderr_truncated": _bool(payload.get("stderr_truncated"), _bool(payload.get("truncated"), False)),
+                }
+            )
+            continue
+        if event_type in {"file_read", "file_write", "file_patch_applied", "file_patch_failed"}:
+            tool_call_id = str(payload.get("tool_call_id", "")).strip()
+            if not tool_call_id:
+                continue
+            file_tool_ids.add(tool_call_id)
+            normalized_path = normalize_repo_path(payload.get("file_path"), repo_root)
+            entry = file_event_by_tool_id.setdefault(tool_call_id, {})
+            entry["event_type"] = event_type
+            entry["normalized_path"] = normalized_path
+            entry["size_bytes"] = payload.get("size_bytes")
+            entry["lines_read"] = payload.get("lines_read")
+            entry["lines_written"] = payload.get("lines_written")
+            entry["preview"] = _truncate(payload.get("preview"), 240) if payload.get("preview") is not None else None
+            entry["created"] = payload.get("created")
+            entry["overwrote"] = payload.get("overwrote")
+            entry["bytes_delta"] = payload.get("bytes_delta")
+            entry["lines_added"] = payload.get("lines_added")
+            entry["lines_removed"] = payload.get("lines_removed")
+            entry["failure_reason"] = payload.get("failure_reason") or payload.get("error")
+            continue
+
+    records: list[dict[str, Any]] = []
+    all_ids = sorted(set(started.keys()) | set(terminal_by_id.keys()))
+    for tool_call_id in all_ids:
+        start = started.get(tool_call_id)
+        terminal_event = terminal_by_id.get(tool_call_id)
+        if start is None and terminal_event is not None:
+            payload = terminal_event.get("payload") if isinstance(terminal_event.get("payload"), dict) else {}
             warnings.append(f"terminal tool event without matching start: {tool_call_id}")
             start = {
                 "tool_call_id": tool_call_id,
-                "run_id": str(event.get("run_id") or run_dir.name),
-                "turn_index": turn_index,
+                "run_id": str(terminal_event.get("run_id") or run_dir.name),
+                "turn_index": terminal_event.get("turn_index") if isinstance(terminal_event.get("turn_index"), int) else None,
                 "tool_name": _normalize_tool_name(payload.get("tool_name")),
                 "tool_category": _infer_tool_category(_normalize_tool_name(payload.get("tool_name"))),
-                "started_at": event.get("ts"),
+                "started_at": terminal_event.get("ts"),
                 "args": {},
             }
-
-        tool_name = _normalize_tool_name(payload.get("tool_name") or start.get("tool_name"))
-        status = "failed" if event_type == "tool_call_failed" else "success"
-        started_at_dt = _parse_ts(start.get("started_at"))
-        ended_at_dt = _parse_ts(event.get("ts"))
-        duration_ms: int | None = None
-        if started_at_dt is not None and ended_at_dt is not None:
-            duration_ms = max(0, int((ended_at_dt - started_at_dt).total_seconds() * 1000))
-
+        assert start is not None
+        tool_name = _normalize_tool_name(start.get("tool_name"))
         args = start.get("args") if isinstance(start.get("args"), dict) else {}
         normalized_args_summary = {
             "file_path": normalize_repo_path(args.get("file_path"), repo_root) if "file_path" in args else None,
@@ -254,23 +316,72 @@ def build_tool_call_records_from_events(run_dir: Path) -> tuple[list[dict[str, A
             "cwd": normalize_repo_path(args.get("cwd"), repo_root) if "cwd" in args else None,
             "arg_keys": sorted(args.keys()),
         }
+        status = "partial"
+        ended_at: Any = None
+        duration_ms: int | None = None
+        result_summary: dict[str, Any] = {"kind": "unterminated_tool_call", "warning": "missing terminal tool event"}
+        error_value: dict[str, Any] | None = {"error_type": "missing_terminal_event", "message": "tool_call_started exists without terminal tool event"}
+        if terminal_event is not None:
+            payload = terminal_event.get("payload") if isinstance(terminal_event.get("payload"), dict) else {}
+            status = "failed" if str(terminal_event.get("event_type")) == "tool_call_failed" else "success"
+            ended_at = terminal_event.get("ts")
+            error_value = None
+            started_at_dt = _parse_ts(start.get("started_at"))
+            ended_at_dt = _parse_ts(ended_at)
+            if started_at_dt is not None and ended_at_dt is not None:
+                duration_ms = max(0, int((ended_at_dt - started_at_dt).total_seconds() * 1000))
+            result_summary = payload.get("result_summary") if isinstance(payload.get("result_summary"), dict) else {}
+            if not result_summary:
+                result_summary = {"summary": _truncate(payload.get("summary"), 240)}
+            if status == "failed":
+                error_value = payload.get("error") if isinstance(payload.get("error"), dict) else None
+                if error_value is None:
+                    error_value = {
+                        "error_type": payload.get("error_type") or "tool_error",
+                        "message": _truncate(payload.get("summary"), 240),
+                    }
 
-        result_summary = payload.get("result_summary") if isinstance(payload.get("result_summary"), dict) else {}
-        if tool_name.lower() == "bash":
+        lowered = tool_name.lower()
+        command_data = command_by_tool_id.get(tool_call_id, {})
+        file_data = file_event_by_tool_id.get(tool_call_id, {})
+        if _is_shell_tool(tool_name):
             result_summary = {
-                "command": _truncate(args.get("command"), 160),
-                "cwd": normalize_repo_path(args.get("cwd", "."), repo_root),
-                "exit_code": payload.get("exit_code"),
-                "summary": _truncate(payload.get("summary"), 240),
+                "kind": "command_result",
+                "command": _truncate(command_data.get("command") or args.get("command"), 240),
+                "cwd": normalize_repo_path(command_data.get("cwd") or args.get("cwd"), repo_root),
+                "exit_code": command_data.get("exit_code"),
+                "stdout_preview": command_data.get("stdout_preview", ""),
+                "stderr_preview": command_data.get("stderr_preview", ""),
+                "stdout_truncated": _bool(command_data.get("stdout_truncated"), False),
+                "stderr_truncated": _bool(command_data.get("stderr_truncated"), False),
             }
-        elif not result_summary:
-            result_summary = {"summary": _truncate(payload.get("summary"), 240)}
-
-        error_value = None
-        if status == "failed":
-            error_value = {
-                "error_type": payload.get("error_type") or "tool_error",
-                "message": _truncate(payload.get("summary"), 240),
+        elif lowered == "read" and file_data:
+            result_summary = {
+                "kind": "file_read_result",
+                "path": file_data.get("normalized_path"),
+                "bytes_read": file_data.get("size_bytes"),
+                "lines_read": file_data.get("lines_read"),
+                "preview": file_data.get("preview"),
+                "preview_truncated": False,
+            }
+        elif lowered == "write" and file_data:
+            result_summary = {
+                "kind": "file_write_result",
+                "path": file_data.get("normalized_path"),
+                "bytes_written": file_data.get("size_bytes"),
+                "lines_written": file_data.get("lines_written"),
+                "created": file_data.get("created"),
+                "overwrote": file_data.get("overwrote"),
+            }
+        elif lowered == "patch" and file_data:
+            result_summary = {
+                "kind": "file_patch_result",
+                "path": file_data.get("normalized_path"),
+                "ok": file_data.get("event_type") == "file_patch_applied",
+                "bytes_delta": file_data.get("bytes_delta"),
+                "lines_added": file_data.get("lines_added"),
+                "lines_removed": file_data.get("lines_removed"),
+                "failure_reason": file_data.get("failure_reason"),
             }
 
         records.append(
@@ -281,7 +392,7 @@ def build_tool_call_records_from_events(run_dir: Path) -> tuple[list[dict[str, A
                 "tool_name": tool_name,
                 "tool_category": _infer_tool_category(tool_name),
                 "started_at": start.get("started_at"),
-                "ended_at": event.get("ts"),
+                "ended_at": ended_at,
                 "duration_ms": duration_ms,
                 "status": status,
                 "args": args,
@@ -291,11 +402,17 @@ def build_tool_call_records_from_events(run_dir: Path) -> tuple[list[dict[str, A
                 "schema_version": TOOL_CALL_SCHEMA_VERSION,
             }
         )
+    if any(row.get("status") == "partial" for row in records):
+        warnings.append("Unterminated tool calls detected.")
 
-    if started:
-        warnings.append(
-            "Unterminated tool calls detected: " + ", ".join(sorted(started.keys())[:10])
-        )
+    tool_ids = {str(row.get("tool_call_id", "")).strip() for row in records}
+    bash_tool_ids = {str(row.get("tool_call_id", "")).strip() for row in records if _is_shell_tool(str(row.get("tool_name", "")))}
+    missing_command_ids = sorted(command_tool_ids - bash_tool_ids)
+    if missing_command_ids:
+        validation_errors.append("command events contain tool_call_id values without matching Bash tool rows: " + ", ".join(missing_command_ids[:10]))
+    missing_file_ids = sorted(file_tool_ids - tool_ids)
+    if missing_file_ids:
+        validation_errors.append("file events contain tool_call_id values without matching tool-call records: " + ", ".join(missing_file_ids[:10]))
 
     return records, warnings, validation_errors
 
@@ -349,6 +466,8 @@ def aggregate_summary_from_events(run_dir: Path, *, status_override: str | None 
 
     turns: set[int] = set()
     saw_turn_events = False
+    run_started_count = 0
+    run_terminal_count = 0
 
     for event in events:
         event_type = str(event.get("event_type") or event.get("type") or "")
@@ -372,7 +491,11 @@ def aggregate_summary_from_events(run_dir: Path, *, status_override: str | None 
                 ended_at = ts
 
         if event_type in {"run_completed", "run_failed"}:
+            run_terminal_count += 1
             status = "completed" if event_type == "run_completed" else "failed"
+            continue
+        if event_type == "run_started":
+            run_started_count += 1
             continue
 
         if event_type == "tool_call_started":
@@ -498,6 +621,14 @@ def aggregate_summary_from_events(run_dir: Path, *, status_override: str | None 
         validation_errors.append("Canonical shell tool calls exist but commands_executed is zero.")
     if total_tool_calls == 0 and any(str(e.get("event_type", "")) == "tool_call_started" for e in events):
         validation_errors.append("tool_call_started events exist while total_tool_calls is zero.")
+    if total_tool_calls > 0 and not tool_rows:
+        validation_errors.append("Canonical tool_call_started events exist but tool_calls.jsonl materialization is empty.")
+    if len(tool_rows) != total_tool_calls:
+        validation_errors.append("canonical tool_call_started count does not match materialized tool_call row count.")
+    if run_started_count != 1:
+        validation_errors.append(f"expected exactly one canonical run_started event; found {run_started_count}.")
+    if run_terminal_count != 1:
+        validation_errors.append(f"expected exactly one canonical terminal run event; found {run_terminal_count}.")
     if summary["tokens_input"] == 0 and any(
         isinstance((e.get("payload") or {}).get("tokens_input"), int) and (e.get("payload") or {}).get("tokens_input") > 0
         for e in events
@@ -520,15 +651,29 @@ def aggregate_summary_from_events(run_dir: Path, *, status_override: str | None 
     command_tool_ids = {
         str((e.get("payload") or {}).get("tool_call_id", "")).strip()
         for e in events
-        if str(e.get("event_type", "")) == "command_finished"
+        if str(e.get("event_type", "")) in {"command_finished", "command_started"}
     }
     command_tool_ids.discard("")
     tool_ids = {str(row.get("tool_call_id", "")).strip() for row in tool_rows}
-    missing_tool_ids = sorted(command_tool_ids - tool_ids)
+    bash_tool_ids = {str(row.get("tool_call_id", "")).strip() for row in tool_rows if _is_shell_tool(str(row.get("tool_name", "")))}
+    missing_tool_ids = sorted(command_tool_ids - bash_tool_ids)
     if missing_tool_ids:
         validation_errors.append(
-            "commands.jsonl/canonical command events contain tool_call_id values without matching tool-call records: "
+            "canonical command events contain tool_call_id values without matching Bash tool-call records: "
             + ", ".join(missing_tool_ids[:10])
+        )
+
+    file_tool_ids = {
+        str((e.get("payload") or {}).get("tool_call_id", "")).strip()
+        for e in events
+        if str(e.get("event_type", "")) in {"file_read", "file_write", "file_patch_applied", "file_patch_failed"}
+    }
+    file_tool_ids.discard("")
+    missing_file_tool_ids = sorted(file_tool_ids - tool_ids)
+    if missing_file_tool_ids:
+        validation_errors.append(
+            "canonical file events contain tool_call_id values without matching tool-call records: "
+            + ", ".join(missing_file_tool_ids[:10])
         )
 
     if warnings:

@@ -24,7 +24,6 @@ def test_debug_root_creation(tmp_path: Path) -> None:
 def test_recorder_writes_events_and_summary(tmp_path: Path) -> None:
     config = build_debug_config("trace", tmp_path)
     recorder = DebugRecorder(config, run_id="r1", objective="fix", repo=tmp_path, mode="execution", model="demo")
-    recorder.record_event("run_started", "Run started")
     recorder.record_turn_start(1, {"message_count": 2})
     recorder.record_model_request({"model": "demo", "messages": [{"role": "user", "content": []}]})
     recorder.record_model_response({"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"})

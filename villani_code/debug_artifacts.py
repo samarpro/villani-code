@@ -25,7 +25,6 @@ class DebugRunArtifacts:
 DEBUG_JSONL_FILES = {
     "events": "events.jsonl",
     "turns": "turns.jsonl",
-    "tool_calls": "tool_calls.jsonl",
     "commands": "commands.jsonl",
     "patches": "patches.jsonl",
     "approvals": "approvals.jsonl",
