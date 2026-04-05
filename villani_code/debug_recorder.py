@@ -110,12 +110,10 @@ class DebugRecorder:
             },
         )
 
-    def record_tool_call(self, name: str, args: dict[str, Any], tool_use_id: str = "") -> None:
+    def record_tool_call(self, name: str, args: dict[str, Any], tool_use_id: str = "", turn_index: int | None = None) -> None:
         data = args if self.config.capture_full_tool_payloads else {k: args[k] for k in ("file_path", "command") if k in args}
         tool_call_id = tool_use_id or f"tool-{self._seq + 1}"
-        row = {"ts": self._ts(), "name": name, "tool_use_id": tool_call_id, "args": data}
         self._tool_call_to_name[tool_call_id] = name
-        self._safe_append_jsonl("tool_calls", row)
         self._emit(
             "tool_call_started",
             {
@@ -123,29 +121,44 @@ class DebugRecorder:
                 "tool_call_id": tool_call_id,
                 "args": data,
             },
+            turn_index=turn_index,
         )
 
-    def record_tool_result(self, name: str, is_error: bool, summary: str = "", tool_use_id: str = "", exit_code: int | None = None) -> None:
+    def record_tool_result(
+        self,
+        name: str,
+        is_error: bool,
+        summary: str = "",
+        tool_use_id: str = "",
+        exit_code: int | None = None,
+        result_payload: dict[str, Any] | None = None,
+        turn_index: int | None = None,
+    ) -> None:
         tool_call_id = tool_use_id or ""
         if not tool_call_id:
             for known_id, known_name in reversed(list(self._tool_call_to_name.items())):
                 if known_name == name:
                     tool_call_id = known_id
                     break
+        payload_data = result_payload if isinstance(result_payload, dict) else {}
         payload = {
             "tool_name": name,
             "tool_call_id": tool_call_id,
             "summary": summary,
             "status": "failed" if is_error else "completed",
             "result_summary": {"summary": summary},
+            "result": payload_data,
         }
         if exit_code is not None:
             payload["exit_code"] = exit_code
         if is_error:
             payload["error_type"] = "tool_error"
-            self._emit("tool_call_failed", payload)
+            payload["error"] = payload_data.get("error") if isinstance(payload_data.get("error"), dict) else {
+                "message": str(payload_data.get("content", summary or "")),
+            }
+            self._emit("tool_call_failed", payload, turn_index=turn_index)
         else:
-            self._emit("tool_call_completed", payload)
+            self._emit("tool_call_completed", payload, turn_index=turn_index)
 
     def record_command_start(self, command: str, cwd: str, tool_call_id: str = "") -> None:
         self.record_event("command_started", f"Command started: {command}", {"command": command, "cwd": cwd, "tool_call_id": tool_call_id})
@@ -282,19 +295,32 @@ class DebugRecorder:
         etype = str(event.get("type", ""))
         if not etype:
             return
+        event_turn_index = event.get("turn_index") if isinstance(event.get("turn_index"), int) else None
         if etype == "tool_started":
-            self.record_tool_call(str(event.get("name", "")), dict(event.get("input", {})), str(event.get("tool_use_id", event.get("tool_call_id", ""))))
+            self.record_tool_call(
+                str(event.get("name", "")),
+                dict(event.get("input", {})),
+                str(event.get("tool_use_id", event.get("tool_call_id", ""))),
+                turn_index=event_turn_index,
+            )
             return
-        if etype == "tool_finished":
-            is_error = bool(event.get("is_error", False))
-            exit_code = event.get("exit_code")
+        if etype == "tool_result":
+            result_payload = dict(event.get("result", {})) if isinstance(event.get("result"), dict) else {}
+            if not result_payload:
+                result_payload = {k: v for k, v in event.items() if k not in {"type", "name", "input", "tool_use_id", "tool_call_id", "turn_index"}}
+            summary = str(result_payload.get("summary") or result_payload.get("content") or event.get("summary") or "")
+            exit_code = result_payload.get("exit_code")
             self.record_tool_result(
                 str(event.get("name", "")),
-                is_error,
-                str(event.get("summary", "")),
+                bool(event.get("is_error", result_payload.get("is_error", False))),
+                summary,
                 str(event.get("tool_use_id", event.get("tool_call_id", ""))),
                 int(exit_code) if isinstance(exit_code, int) else None,
+                result_payload=result_payload,
+                turn_index=event_turn_index,
             )
+            return
+        if etype == "tool_finished":
             return
         if etype == "approval_required":
             self.record_approval_requested(str(event.get("name", "")), dict(event.get("input", {})))
@@ -313,4 +339,4 @@ class DebugRecorder:
         if etype == "context_compacted":
             self.record_context_compacted(event)
             return
-        self.record_event(etype, etype, event)
+        self.record_event(etype, etype, event, turn_index=event_turn_index)

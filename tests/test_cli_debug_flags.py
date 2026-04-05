@@ -47,8 +47,10 @@ def test_cli_trace_rebuild_summary(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "events.jsonl").write_text(
-        '{"event_id":1,"run_id":"r1","ts":"2026-04-01T00:00:00+00:00","event_type":"tool_call_started","payload":{"tool_name":"Bash","tool_call_id":"t1"}}\n'
-        '{"event_id":2,"run_id":"r1","ts":"2026-04-01T00:00:01+00:00","event_type":"tool_call_completed","payload":{"tool_name":"Bash","tool_call_id":"t1","exit_code":0}}\n',
+        '{"event_id":1,"run_id":"r1","ts":"2026-04-01T00:00:00+00:00","event_type":"run_started","payload":{"objective":"x"}}\n'
+        '{"event_id":2,"run_id":"r1","ts":"2026-04-01T00:00:00+00:00","event_type":"tool_call_started","payload":{"tool_name":"Bash","tool_call_id":"t1"}}\n'
+        '{"event_id":3,"run_id":"r1","ts":"2026-04-01T00:00:01+00:00","event_type":"tool_call_completed","payload":{"tool_name":"Bash","tool_call_id":"t1","exit_code":0}}\n'
+        '{"event_id":4,"run_id":"r1","ts":"2026-04-01T00:00:02+00:00","event_type":"run_completed","payload":{"termination_reason":"completed"}}\n',
         encoding="utf-8",
     )
     runner = CliRunner()
@@ -62,8 +64,10 @@ def test_cli_trace_rebuild_tool_calls(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "events.jsonl").write_text(
-        '{"event_id":1,"run_id":"r1","ts":"2026-04-01T00:00:00+00:00","event_type":"tool_call_started","payload":{"tool_name":"Read","tool_call_id":"t1","args":{"file_path":"a.py"}}}\n'
-        '{"event_id":2,"run_id":"r1","ts":"2026-04-01T00:00:01+00:00","event_type":"tool_call_completed","payload":{"tool_name":"Read","tool_call_id":"t1","summary":"ok"}}\n',
+        '{"event_id":1,"run_id":"r1","ts":"2026-04-01T00:00:00+00:00","event_type":"run_started","payload":{"objective":"x"}}\n'
+        '{"event_id":2,"run_id":"r1","ts":"2026-04-01T00:00:00+00:00","event_type":"tool_call_started","payload":{"tool_name":"Read","tool_call_id":"t1","args":{"file_path":"a.py"}}}\n'
+        '{"event_id":3,"run_id":"r1","ts":"2026-04-01T00:00:01+00:00","event_type":"tool_call_completed","payload":{"tool_name":"Read","tool_call_id":"t1","summary":"ok"}}\n'
+        '{"event_id":4,"run_id":"r1","ts":"2026-04-01T00:00:02+00:00","event_type":"run_completed","payload":{"termination_reason":"completed"}}\n',
         encoding="utf-8",
     )
     runner = CliRunner()

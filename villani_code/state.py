@@ -665,7 +665,6 @@ class Runner:
             self._event_recorder.write_digest()
         if self._debug_recorder is not None:
             self._debug_recorder.record_event("subagent_finished", "Autonomous run finished", {"done_reason": summary.get("done_reason", "") if isinstance(summary, dict) else ""})
-            self._debug_recorder.record_event("run_finished", "Run finished", {"status": "completed", "termination_reason": "completed"})
             self._debug_recorder.write_final_summary(
                 status="completed",
                 termination_reason="completed",
@@ -836,6 +835,7 @@ class Runner:
                     "input": forced_input,
                     "tool_use_id": forced_tool_use_id,
                     "is_error": forced_result["is_error"],
+                    "result": self._build_tool_result_event_payload("Read", forced_tool_use_id, forced_result),
                     "forced": True,
                 }
             )
@@ -1007,7 +1007,6 @@ class Runner:
             if self._event_recorder is not None:
                 self._event_recorder.write_digest()
             if self._debug_recorder is not None:
-                self._debug_recorder.record_event("run_finished", "Run finished", {"status": mission_status, "termination_reason": reason})
                 self._debug_recorder.write_final_summary(
                     status=mission_status,
                     termination_reason=reason,
@@ -1185,7 +1184,6 @@ class Runner:
                     if self._event_recorder is not None:
                         self._event_recorder.write_digest()
                     if self._debug_recorder is not None:
-                        self._debug_recorder.record_event("run_finished", "Run finished", {"status": "completed", "termination_reason": "completed"})
                         self._debug_recorder.write_final_summary(
                             status="completed",
                             termination_reason="completed",
@@ -1314,7 +1312,6 @@ class Runner:
                 if self._event_recorder is not None:
                     self._event_recorder.write_digest()
                 if self._debug_recorder is not None:
-                    self._debug_recorder.record_event("run_finished", "Run finished", {"status": "completed", "termination_reason": "completed"})
                     self._debug_recorder.write_final_summary(
                         status="completed",
                         termination_reason="completed",
@@ -1449,6 +1446,7 @@ class Runner:
                         "input": tool_input,
                         "tool_use_id": tool_use_id,
                         "is_error": result["is_error"],
+                        "result": self._build_tool_result_event_payload(tool_name, tool_use_id, result),
                     }
                 )
                 tool_results.append(
@@ -1560,7 +1558,6 @@ class Runner:
                     mode=mode,
                     model=self.model,
                 )
-                self._debug_recorder.record_event("run_started", "Run started", {"instruction": instruction})
         self._update_mission_state(objective=instruction, mode=mode, status="active")
 
     def _update_mission_state(self, **fields: Any) -> None:
@@ -1615,6 +1612,34 @@ class Runner:
             tool_use_id,
             message_count,
         )
+
+    def _build_tool_result_event_payload(
+        self, tool_name: str, tool_use_id: str, result: dict[str, Any]
+    ) -> dict[str, Any]:
+        content = result.get("content", "")
+        payload: dict[str, Any] = {
+            "tool_use_id": tool_use_id,
+            "tool_call_id": tool_use_id,
+            "tool_name": tool_name,
+            "is_error": bool(result.get("is_error", False)),
+            "content": content,
+            "result_payload": content,
+        }
+        if payload["is_error"]:
+            payload["error"] = {"message": str(content)}
+            return payload
+        if tool_name == "Bash":
+            try:
+                decoded = json.loads(str(content))
+            except Exception:
+                decoded = {}
+            if isinstance(decoded, dict):
+                payload["command"] = decoded.get("command")
+                payload["exit_code"] = decoded.get("exit_code")
+                payload["stdout"] = decoded.get("stdout")
+                payload["stderr"] = decoded.get("stderr")
+                payload["result_payload"] = decoded
+        return payload
 
 
     def _prepare_messages_for_model(

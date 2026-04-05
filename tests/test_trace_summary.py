@@ -8,6 +8,7 @@ import pytest
 from villani_code.trace_summary import (
     EventLogger,
     aggregate_summary_from_events,
+    build_tool_call_records_from_events,
     validate_summary,
     write_summary_from_events,
     write_tool_calls_from_events,
@@ -17,103 +18,157 @@ from villani_code.trace_summary import (
 def _logger(tmp_path: Path) -> tuple[Path, EventLogger]:
     run_dir = tmp_path / "run-1"
     run_dir.mkdir(parents=True, exist_ok=True)
-    return run_dir, EventLogger("run-1", run_dir / "events.jsonl")
+    logger = EventLogger("run-1", run_dir / "events.jsonl")
+    logger.emit("run_started", {"objective": "test"})
+    return run_dir, logger
 
 
-def _emit_tool(logger: EventLogger, *, tool_id: str, name: str, ok: bool = True, turn_index: int | None = None, args: dict | None = None) -> None:
+def _finish_run(logger: EventLogger) -> None:
+    logger.emit("run_completed", {"termination_reason": "completed"})
+
+
+def _emit_tool(
+    logger: EventLogger,
+    *,
+    tool_id: str,
+    name: str,
+    ok: bool = True,
+    turn_index: int | None = None,
+    args: dict | None = None,
+) -> None:
     logger.emit("tool_call_started", {"tool_name": name, "tool_call_id": tool_id, "args": args or {}}, turn_index=turn_index)
     if ok:
-        logger.emit("tool_call_completed", {"tool_name": name, "tool_call_id": tool_id, "status": "completed", "result_summary": {"summary": "ok"}}, turn_index=turn_index)
+        logger.emit(
+            "tool_call_completed",
+            {"tool_name": name, "tool_call_id": tool_id, "status": "completed", "result_summary": {"summary": "ok"}},
+            turn_index=turn_index,
+        )
     else:
-        logger.emit("tool_call_failed", {"tool_name": name, "tool_call_id": tool_id, "status": "failed", "summary": "boom"}, turn_index=turn_index)
+        logger.emit(
+            "tool_call_failed",
+            {"tool_name": name, "tool_call_id": tool_id, "status": "failed", "summary": "boom"},
+            turn_index=turn_index,
+        )
 
 
 def test_turn_indexing_and_turn_counts(tmp_path: Path) -> None:
     run_dir, logger = _logger(tmp_path)
-    turns_path = run_dir / "turns.jsonl"
-    turns_path.write_text(
-        "\n".join(
-            json.dumps({"ts": f"2026-04-01T00:00:0{i}Z", "turn_index": i, "payload": {"message_count": 2}})
-            for i in range(1, 4)
-        )
-        + "\n",
-        encoding="utf-8",
-    )
     for i in range(1, 4):
         logger.emit("turn_started", {"message_count": 2}, turn_index=i)
         logger.emit("turn_finished", {"stop_reason": "tool_use"}, turn_index=i)
+    _finish_run(logger)
 
     summary = aggregate_summary_from_events(run_dir)
     assert summary["turn_count"] == 3
 
 
-def test_basic_tool_lifecycle_and_tool_calls_file(tmp_path: Path) -> None:
+def test_bash_tool_finalization_from_tool_result(tmp_path: Path) -> None:
     run_dir, logger = _logger(tmp_path)
-    _emit_tool(logger, tool_id="t1", name="Bash", args={"command": "echo hi"})
-    _emit_tool(logger, tool_id="t2", name="Write", args={"file_path": "a.py"})
-    _emit_tool(logger, tool_id="t3", name="Read", args={"file_path": "a.py"})
+    logger.emit("tool_call_started", {"tool_name": "Bash", "tool_call_id": "bash-1", "args": {"command": "pwd", "cwd": "."}}, turn_index=1)
+    logger.emit("command_started", {"command": "pwd", "cwd": ".", "tool_call_id": "bash-1"}, turn_index=1)
+    logger.emit(
+        "command_finished",
+        {"command": "pwd", "cwd": ".", "tool_call_id": "bash-1", "exit_code": 0, "stdout": "/tmp\n", "stderr": "", "truncated": False},
+        turn_index=1,
+    )
+    logger.emit(
+        "tool_call_completed",
+        {"tool_name": "Bash", "tool_call_id": "bash-1", "summary": "ok", "result": {"content": "ok"}},
+        turn_index=1,
+    )
+    logger.emit("tool_finished", {"name": "Bash", "tool_call_id": "bash-1"}, turn_index=1)
+    _finish_run(logger)
 
-    tool_calls_path = write_tool_calls_from_events(run_dir)
-    rows = [json.loads(line) for line in tool_calls_path.read_text(encoding="utf-8").splitlines()]
-    summary = aggregate_summary_from_events(run_dir)
+    rows = [json.loads(line) for line in write_tool_calls_from_events(run_dir).read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["result_summary"]["kind"] == "command_result"
+    assert rows[0]["result_summary"]["exit_code"] == 0
+    assert "stdout_preview" in rows[0]["result_summary"]
+    assert "stderr_preview" in rows[0]["result_summary"]
 
-    assert len(rows) == 3
-    assert summary["total_tool_calls"] == 3
-    assert summary["tool_calls_by_name"] == {"Bash": 1, "Write": 1, "Read": 1}
 
-
-def test_command_alignment_uses_canonical_shell_tools(tmp_path: Path) -> None:
+def test_write_tool_row_enrichment(tmp_path: Path) -> None:
     run_dir, logger = _logger(tmp_path)
-    _emit_tool(logger, tool_id="bash-1", name="Bash", args={"command": "pwd", "cwd": "."})
-    logger.emit("command_started", {"command": "pwd", "cwd": ".", "tool_call_id": "bash-1"})
-    logger.emit("command_finished", {"command": "pwd", "cwd": ".", "tool_call_id": "bash-1", "exit_code": 0})
-    (run_dir / "commands.jsonl").write_text(json.dumps({"command": "pwd", "tool_call_id": "bash-1"}) + "\n", encoding="utf-8")
+    logger.emit("tool_call_started", {"tool_name": "Write", "tool_call_id": "w1", "args": {"file_path": "a.py"}}, turn_index=1)
+    logger.emit("file_write", {"tool_call_id": "w1", "file_path": "a.py", "size_bytes": 12, "lines_written": 1}, turn_index=1)
+    logger.emit("tool_call_completed", {"tool_name": "Write", "tool_call_id": "w1", "summary": "ok"}, turn_index=1)
+    logger.emit("tool_finished", {"name": "Write", "tool_call_id": "w1"}, turn_index=1)
+    _finish_run(logger)
 
-    summary = aggregate_summary_from_events(run_dir)
-    assert summary["commands_executed"] == 1
-    assert summary["commands_failed"] == 0
+    rows = [json.loads(line) for line in write_tool_calls_from_events(run_dir).read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["result_summary"]["kind"] == "file_write_result"
+    assert rows[0]["result_summary"]["path"] == "a.py"
+    assert rows[0]["result_summary"]["bytes_written"] == 12
 
 
-def test_failed_tool_call_is_accounted(tmp_path: Path) -> None:
+def test_patch_tool_row_enrichment(tmp_path: Path) -> None:
     run_dir, logger = _logger(tmp_path)
-    _emit_tool(logger, tool_id="t1", name="Bash", ok=False, args={"command": "exit 1"})
+    logger.emit("tool_call_started", {"tool_name": "Patch", "tool_call_id": "p1", "args": {"file_path": "a.py"}}, turn_index=1)
+    logger.emit(
+        "file_patch_applied",
+        {"tool_call_id": "p1", "file_path": "a.py", "bytes_delta": 10, "lines_added": 2, "lines_removed": 1},
+        turn_index=1,
+    )
+    logger.emit("tool_call_completed", {"tool_name": "Patch", "tool_call_id": "p1", "summary": "ok"}, turn_index=1)
+    logger.emit("tool_finished", {"name": "Patch", "tool_call_id": "p1"}, turn_index=1)
+    _finish_run(logger)
+
+    rows = [json.loads(line) for line in write_tool_calls_from_events(run_dir).read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["result_summary"]["kind"] == "file_patch_result"
+    assert rows[0]["result_summary"]["bytes_delta"] == 10
+
+
+def test_unterminated_tool_is_materialized_and_warned(tmp_path: Path) -> None:
+    run_dir, logger = _logger(tmp_path)
+    logger.emit("tool_call_started", {"tool_name": "Write", "tool_call_id": "t1", "args": {"file_path": "a.py"}}, turn_index=1)
+    _finish_run(logger)
 
     rows = [json.loads(line) for line in write_tool_calls_from_events(run_dir).read_text(encoding="utf-8").splitlines()]
     summary = aggregate_summary_from_events(run_dir)
-
-    assert rows[0]["status"] == "failed"
-    assert summary["tool_failures_by_name"]["Bash"] == 1
-    assert summary["commands_failed"] == 1
-
-
-def test_unterminated_tool_is_flagged(tmp_path: Path) -> None:
-    run_dir, logger = _logger(tmp_path)
-    logger.emit("tool_call_started", {"tool_name": "Write", "tool_call_id": "t1", "args": {"file_path": "a.py"}})
-
-    summary = aggregate_summary_from_events(run_dir)
-    assert summary["total_tool_calls"] == 1
+    assert len(rows) == 1
+    assert rows[0]["status"] == "partial"
+    assert rows[0]["result_summary"]["kind"] == "unterminated_tool_call"
     assert any("Unterminated tool calls" in w for w in summary.get("aggregation_warnings", []))
 
 
-def test_token_aggregation_non_null(tmp_path: Path) -> None:
+def test_command_to_tool_mapping_enforced(tmp_path: Path) -> None:
     run_dir, logger = _logger(tmp_path)
-    logger.emit("model_request_started", {"model": "demo"}, turn_index=1)
-    logger.emit("model_request_completed", {"tokens_input": 100, "tokens_output": 40}, turn_index=1)
-    logger.emit("model_request_completed", {"tokens_input": 50, "tokens_output": 10}, turn_index=2)
+    logger.emit("command_finished", {"tool_call_id": "missing", "command": "pwd", "cwd": ".", "exit_code": 0}, turn_index=1)
+    _finish_run(logger)
+
+    with pytest.raises(ValueError, match="matching Bash tool-call records"):
+        aggregate_summary_from_events(run_dir)
+
+
+def test_no_duplicate_run_started_or_terminal(tmp_path: Path) -> None:
+    run_dir, logger = _logger(tmp_path)
+    _emit_tool(logger, tool_id="t1", name="Read", args={"file_path": "x.py"})
+    _finish_run(logger)
 
     summary = aggregate_summary_from_events(run_dir)
-    assert summary["tokens_input"] == 150
-    assert summary["tokens_output"] == 50
+    assert summary["status"] == "completed"
 
 
-def test_token_aggregation_null_when_absent(tmp_path: Path) -> None:
+def test_duplicate_run_started_fails(tmp_path: Path) -> None:
     run_dir, logger = _logger(tmp_path)
-    logger.emit("model_request_started", {"model": "demo"}, turn_index=1)
-    logger.emit("model_request_completed", {"stop_reason": "end_turn"}, turn_index=1)
+    logger.emit("run_started", {"objective": "dup"})
+    _finish_run(logger)
 
-    summary = aggregate_summary_from_events(run_dir)
-    assert summary["tokens_input"] is None
-    assert summary["tokens_output"] is None
+    with pytest.raises(ValueError, match="exactly one canonical run_started"):
+        aggregate_summary_from_events(run_dir)
+
+
+def test_tool_calls_jsonl_is_final_only(tmp_path: Path) -> None:
+    run_dir, logger = _logger(tmp_path)
+    _emit_tool(logger, tool_id="t1", name="Read", args={"file_path": "x.py"})
+    _finish_run(logger)
+
+    rows = [json.loads(line) for line in write_tool_calls_from_events(run_dir).read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert "event_type" not in rows[0]
+    assert rows[0]["schema_version"] == "v1"
 
 
 def test_path_normalization_dedupes_mixed_forms(tmp_path: Path) -> None:
@@ -124,6 +179,7 @@ def test_path_normalization_dedupes_mixed_forms(tmp_path: Path) -> None:
 
     logger.emit("file_read", {"file_path": "src/a.py"})
     logger.emit("file_read", {"file_path": str((repo_dir / "src/a.py").resolve())})
+    _finish_run(logger)
 
     summary = aggregate_summary_from_events(run_dir)
     assert summary["total_file_reads"] == 2
@@ -154,6 +210,7 @@ def test_artifact_validation_fails_on_missing_claimed_artifact() -> None:
 def test_rebuild_commands_generate_equivalent_outputs(tmp_path: Path) -> None:
     run_dir, logger = _logger(tmp_path)
     _emit_tool(logger, tool_id="t1", name="Read", args={"file_path": "x.py"})
+    _finish_run(logger)
 
     tool_path = write_tool_calls_from_events(run_dir)
     summary_path = write_summary_from_events(run_dir)
@@ -163,25 +220,21 @@ def test_rebuild_commands_generate_equivalent_outputs(tmp_path: Path) -> None:
     assert len(rows) == summary["total_tool_calls"]
 
 
-def test_problematic_real_trace_like_fixture(tmp_path: Path) -> None:
+def test_duplicate_tool_lifecycle_fails_validation(tmp_path: Path) -> None:
     run_dir, logger = _logger(tmp_path)
-    tool_idx = 0
-    for turn in range(1, 8):
-        logger.emit("turn_started", {"message_count": 3}, turn_index=turn)
-        logger.emit("model_request_started", {"model": "demo"}, turn_index=turn)
-        logger.emit("model_request_completed", {"tokens_input": 20, "tokens_output": 10}, turn_index=turn)
-        for name in ["Bash", "Write", "Patch", "Read", "Ls", "Grep"]:
-            tool_idx += 1
-            _emit_tool(logger, tool_id=f"t{tool_idx}", name=name, turn_index=turn, args={"file_path": f"f{turn}.py", "command": "echo hi"})
-        logger.emit("file_write", {"file_path": f"f{turn}.py"}, turn_index=turn)
-        logger.emit("turn_finished", {"stop_reason": "tool_use"}, turn_index=turn)
+    logger.emit("tool_call_started", {"tool_name": "Read", "tool_call_id": "t1", "args": {"file_path": "a.py"}}, turn_index=1)
+    logger.emit("tool_call_started", {"tool_name": "Read", "tool_call_id": "t1", "args": {"file_path": "a.py"}}, turn_index=1)
+    logger.emit("tool_call_completed", {"tool_name": "Read", "tool_call_id": "t1"}, turn_index=1)
+    _finish_run(logger)
 
-    write_tool_calls_from_events(run_dir)
-    summary = aggregate_summary_from_events(run_dir)
+    with pytest.raises(ValueError, match="duplicate tool_call_started"):
+        write_tool_calls_from_events(run_dir)
 
-    assert summary["turn_count"] == 7
-    assert summary["total_tool_calls"] == 42
-    assert summary["commands_executed"] == 14
-    assert summary["tokens_input"] == 140
-    assert summary["tokens_output"] == 70
-    assert (run_dir / "tool_calls.jsonl").exists()
+
+def test_file_event_mapping_enforced(tmp_path: Path) -> None:
+    run_dir, logger = _logger(tmp_path)
+    logger.emit("file_write", {"tool_call_id": "missing", "file_path": "a.py", "size_bytes": 1}, turn_index=1)
+    _finish_run(logger)
+
+    with pytest.raises(ValueError, match="canonical file events contain tool_call_id values without matching tool-call records"):
+        aggregate_summary_from_events(run_dir)
