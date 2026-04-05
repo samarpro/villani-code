@@ -54,12 +54,23 @@ class ClaudeCodeAgentRunner(AgentRunner):
             prompt,
         ]
 
-    def build_env(self, *, base_url: str | None, api_key: str | None) -> dict[str, str]:
+    def build_env(self, *, base_url: str | None, api_key: str | None, provider: str | None = None) -> dict[str, str]:
         env = super().build_env(base_url=base_url, api_key=api_key)
-        if base_url:
-            env["ANTHROPIC_BASE_URL"] = base_url
-        if api_key:
-            env["ANTHROPIC_API_KEY"] = api_key
+        normalized_provider = (provider or "anthropic").strip().lower()
+        if normalized_provider == "openai":
+            env.pop("ANTHROPIC_BASE_URL", None)
+            env.pop("ANTHROPIC_API_KEY", None)
+            if base_url:
+                env["OPENAI_BASE_URL"] = base_url
+            if api_key:
+                env["OPENAI_API_KEY"] = api_key
+        else:
+            env.pop("OPENAI_BASE_URL", None)
+            env.pop("OPENAI_API_KEY", None)
+            if base_url:
+                env["ANTHROPIC_BASE_URL"] = base_url
+            if api_key:
+                env["ANTHROPIC_API_KEY"] = api_key
         return env
 
     def run_agent(
@@ -101,7 +112,7 @@ class ClaudeCodeAgentRunner(AgentRunner):
             benchmark_config_json=benchmark_config_json,
         )
         base_command = self._apply_capabilities_to_command(base_command, capabilities, deep_debug=False)
-        env = self.build_env(base_url=base_url, api_key=api_key)
+        env = self.build_env(base_url=base_url, api_key=api_key, provider=provider)
         events = [AdapterEvent(type="command_started", timestamp=time.monotonic(), payload={"command": " ".join(base_command)})]
 
         temp_root = debug_dir if debug_dir is not None else Path(tempfile.mkdtemp(prefix="claude-bench-"))
@@ -172,6 +183,7 @@ class ClaudeCodeAgentRunner(AgentRunner):
 
         stdout_touched: list[str] = []
         stdout_diagnostics: dict[str, Any] | None = None
+        stdout_result_summary = self._parse_stdout_result_summary(stdout)
         if not workspace_changes.changed_files and not hook_paths:
             stdout_touched, stdout_diagnostics = apply_stdout_diff_if_needed(repo_path, stdout)
             if stdout_touched:
@@ -215,6 +227,55 @@ class ClaudeCodeAgentRunner(AgentRunner):
                     encoding="utf-8",
                 )
                 debug_artifacts["stdout_postprocess_summary"] = str(debug_dir / "stdout_postprocess_summary.json")
+            stdout_summary_path = debug_dir / "claude_stdout_result_summary.json"
+            stdout_summary_path.write_text(json.dumps(stdout_result_summary, indent=2), encoding="utf-8")
+            debug_artifacts["claude_stdout_result_summary"] = str(stdout_summary_path)
+
+        result_text = stdout_result_summary.get("result")
+        result_len = len(result_text) if isinstance(result_text, str) else 0
+        parsed_success = (
+            stdout_result_summary.get("parsed") is True
+            and stdout_result_summary.get("is_error") in {False, None}
+            and stdout_result_summary.get("subtype") in {None, "success"}
+        )
+        no_tool_use_detected = (
+            exit_code == 0
+            and not timeout_hit
+            and parsed_success
+            and result_len == 0
+            and not hook_result.events
+            and not synthesized_events
+            and not stdout_touched
+        )
+        if no_tool_use_detected:
+            events.append(
+                AdapterEvent(
+                    type="adapter_no_tool_use",
+                    timestamp=time.monotonic(),
+                    payload={"reason": "claude_completed_without_any_tool_activity"},
+                )
+            )
+            if debug_dir is not None:
+                no_tool_use_summary_path = debug_dir / "claude_no_tool_use_summary.json"
+                no_tool_use_summary_path.write_text(
+                    json.dumps(
+                        {
+                            "exit_code": exit_code,
+                            "timeout": timeout_hit,
+                            "stdout_result_len": result_len,
+                            "parsed_num_turns": stdout_result_summary.get("num_turns"),
+                            "hook_event_count": len(hook_result.events),
+                            "workspace_changed_files": workspace_changes.changed_files,
+                            "stdout_diff_found": bool(stdout_touched),
+                            "provider": provider,
+                            "model": model,
+                            "base_url_present": bool(base_url),
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                debug_artifacts["claude_no_tool_use_summary"] = str(no_tool_use_summary_path)
 
         field_quality = self._field_quality()
         has_hooks = bool(hook_result.events)
@@ -385,7 +446,7 @@ class ClaudeCodeAgentRunner(AgentRunner):
         capabilities = self.detect_cli_capabilities()
         command = self.build_command(repo_path, launch_prompt, model, base_url, api_key, provider, benchmark_config_json=benchmark_config_json)
         command = self._apply_capabilities_to_command(command, capabilities, deep_debug=True)
-        env = self.build_env(base_url=base_url, api_key=api_key)
+        env = self.build_env(base_url=base_url, api_key=api_key, provider=provider)
         events = [AdapterEvent(type="command_started", timestamp=time.monotonic(), payload={"command": " ".join(command)})]
         proc = subprocess.Popen(command, cwd=repo_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
         try:
@@ -417,6 +478,10 @@ class ClaudeCodeAgentRunner(AgentRunner):
             caps_path.write_text(json.dumps(capabilities, indent=2), encoding="utf-8")
             debug_artifacts["claude_stream_events"] = str(stream_path)
             debug_artifacts["claude_cli_capabilities"] = str(caps_path)
+            stream_summary_path = debug_dir / "claude_stream_summary.json"
+            stream_summary = self._summarize_stream_output(stdout)
+            stream_summary_path.write_text(json.dumps(stream_summary, indent=2), encoding="utf-8")
+            debug_artifacts["claude_stream_summary"] = str(stream_summary_path)
         return AdapterRunResult(
             stdout=stdout,
             stderr=stderr,
@@ -428,6 +493,83 @@ class ClaudeCodeAgentRunner(AgentRunner):
             events=events,
             debug_artifacts=debug_artifacts,
         )
+
+    @staticmethod
+    def _parse_stdout_result_summary(stdout: str) -> dict[str, Any]:
+        summary: dict[str, Any] = {"parsed": False}
+        payload: dict[str, Any] | None = None
+        stripped = stdout.strip()
+        if not stripped:
+            summary["parse_error"] = "empty_stdout"
+            return summary
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                payload = parsed
+            else:
+                summary["parse_error"] = "top_level_not_object"
+                return summary
+        except json.JSONDecodeError:
+            for line in reversed([entry.strip() for entry in stdout.splitlines() if entry.strip()]):
+                try:
+                    parsed_line = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed_line, dict):
+                    payload = parsed_line
+                    break
+            if payload is None:
+                summary["parse_error"] = "no_json_object_found"
+                return summary
+        summary["parsed"] = True
+        summary["type"] = payload.get("type")
+        summary["subtype"] = payload.get("subtype")
+        summary["is_error"] = payload.get("is_error")
+        summary["result"] = payload.get("result")
+        summary["num_turns"] = payload.get("num_turns")
+        summary["stop_reason"] = payload.get("stop_reason")
+        summary["terminal_reason"] = payload.get("terminal_reason")
+        usage = payload.get("usage")
+        model_usage = payload.get("modelUsage")
+        if isinstance(usage, dict):
+            summary["usage"] = usage
+        if isinstance(model_usage, dict):
+            summary["model_usage"] = model_usage
+        return summary
+
+    @staticmethod
+    def _summarize_stream_output(stdout: str) -> dict[str, int]:
+        summary = {
+            "assistant_messages": 0,
+            "tool_use_events": 0,
+            "tool_result_events": 0,
+            "stop_events": 0,
+            "terminal_events": 0,
+        }
+        for line in stdout.splitlines():
+            entry = line.strip()
+            if not entry:
+                continue
+            try:
+                payload = json.loads(entry)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            event_type = str(payload.get("type") or "")
+            subtype = str(payload.get("subtype") or "")
+            message = payload.get("message")
+            if event_type == "assistant" or subtype == "assistant":
+                summary["assistant_messages"] += 1
+            if subtype == "tool_use" or (isinstance(message, dict) and message.get("type") == "tool_use"):
+                summary["tool_use_events"] += 1
+            if subtype == "tool_result" or (isinstance(message, dict) and message.get("type") == "tool_result"):
+                summary["tool_result_events"] += 1
+            if "stop" in event_type or "stop" in subtype or "stop_reason" in payload:
+                summary["stop_events"] += 1
+            if "terminal" in event_type or "terminal" in subtype or "terminal_reason" in payload:
+                summary["terminal_events"] += 1
+        return summary
 
     @staticmethod
     def _events_from_workspace_changes(changes: Any, hook_paths: set[str]) -> list[AdapterEvent]:

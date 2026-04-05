@@ -84,7 +84,7 @@ def test_claude_code_command_and_env_forward_model_and_endpoint() -> None:
         api_key="sk-ant-test",
         provider="anthropic",
     )
-    env = runner.build_env(base_url="http://127.0.0.1:8080", api_key="sk-ant-test")
+    env = runner.build_env(base_url="http://127.0.0.1:8080", api_key="sk-ant-test", provider="anthropic")
     assert cmd == [
         "claude",
         "--model",
@@ -99,6 +99,32 @@ def test_claude_code_command_and_env_forward_model_and_endpoint() -> None:
     ]
     assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8080"
     assert env["ANTHROPIC_API_KEY"] == "sk-ant-test"
+
+
+def test_claude_code_openai_provider_env_routes_without_anthropic_keys(monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://ambient-anthropic.invalid")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ambient-anthropic-key")
+    runner = ClaudeCodeAgentRunner()
+
+    env = runner.build_env(base_url="http://127.0.0.1:9999", api_key="sk-openai-test", provider="openai")
+
+    assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:9999"
+    assert env["OPENAI_API_KEY"] == "sk-openai-test"
+    assert "ANTHROPIC_BASE_URL" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+
+
+def test_claude_code_anthropic_provider_env_routes_without_openai_keys(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://ambient-openai.invalid")
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-openai-key")
+    runner = ClaudeCodeAgentRunner()
+
+    env = runner.build_env(base_url="http://127.0.0.1:8080", api_key="sk-ant-test", provider="anthropic")
+
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8080"
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-test"
+    assert "OPENAI_BASE_URL" not in env
+    assert "OPENAI_API_KEY" not in env
 
 
 def test_claude_code_command_requires_model() -> None:

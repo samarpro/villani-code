@@ -50,6 +50,16 @@ elif prompt == 'stdout-diff':
     print(json.dumps({'result': diff}))
 elif prompt == 'no-op':
     print(json.dumps({'result': ''}))
+elif prompt == 'stdout-summary':
+    print(json.dumps({
+        'type': 'result',
+        'subtype': 'success',
+        'is_error': False,
+        'num_turns': 3,
+        'result': '',
+        'stop_reason': 'end_turn',
+        'terminal_reason': 'completed',
+    }))
 else:
     print(json.dumps({'result': ''}))
 """,
@@ -124,6 +134,29 @@ def test_claude_adapter_noop_keeps_no_patch_signals(tmp_path: Path, monkeypatch)
 
     _repo, result = _run(tmp_path, "no-op")
     assert not any(event.type in {"apply_patch", "write_file", "file_edit"} for event in result.events)
+    assert any(event.type == "adapter_no_tool_use" for event in result.events)
+    assert "claude_no_tool_use_summary" in result.debug_artifacts
+    no_tool_use_summary = json.loads(Path(result.debug_artifacts["claude_no_tool_use_summary"]).read_text(encoding="utf-8"))
+    assert no_tool_use_summary["stdout_result_len"] == 0
+    assert no_tool_use_summary["hook_event_count"] == 0
+    assert no_tool_use_summary["stdout_diff_found"] is False
+
+
+def test_claude_adapter_writes_stdout_result_summary(tmp_path: Path, monkeypatch) -> None:
+    fake_dir = tmp_path / "bin"
+    fake_dir.mkdir()
+    _make_fake_claude(fake_dir)
+    monkeypatch.setenv("PATH", f"{fake_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    _repo, result = _run(tmp_path, "stdout-summary")
+    summary_path = Path(result.debug_artifacts["claude_stdout_result_summary"])
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["subtype"] == "success"
+    assert summary["is_error"] is False
+    assert summary["result"] == ""
+    assert summary["num_turns"] == 3
+    assert summary["stop_reason"] == "end_turn"
+    assert summary["terminal_reason"] == "completed"
 
 
 def test_claude_adapter_captures_failed_bash_hook(tmp_path: Path, monkeypatch) -> None:
@@ -176,6 +209,7 @@ def test_claude_adapter_deep_debug_writes_stream_events(tmp_path: Path, monkeypa
     )
     stream_path = Path(result.debug_artifacts["claude_stream_events"])
     assert stream_path.exists()
+    assert "claude_stream_summary" in result.debug_artifacts
     cmd = (debug / "agent_command.txt").read_text(encoding="utf-8")
     cmd_parts = shlex.split(cmd)
     assert "--output-format" in cmd_parts
