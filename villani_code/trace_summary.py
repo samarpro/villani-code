@@ -288,6 +288,8 @@ def build_tool_call_records_from_events(run_dir: Path) -> tuple[list[dict[str, A
             entry["lines_added"] = payload.get("lines_added")
             entry["lines_removed"] = payload.get("lines_removed")
             entry["failure_reason"] = payload.get("failure_reason") or payload.get("error")
+            entry["hunks_attempted"] = payload.get("hunks_attempted")
+            entry["hunks_failed"] = payload.get("hunks_failed")
             continue
 
     records: list[dict[str, Any]] = []
@@ -372,6 +374,8 @@ def build_tool_call_records_from_events(run_dir: Path) -> tuple[list[dict[str, A
                 "lines_added": file_data.get("lines_added"),
                 "lines_removed": file_data.get("lines_removed"),
                 "failure_reason": file_data.get("failure_reason"),
+                "hunks_attempted": file_data.get("hunks_attempted"),
+                "hunks_failed": file_data.get("hunks_failed"),
             }
         elif isinstance(terminal_payload.get("result_summary"), dict):
             terminal_summary = dict(terminal_payload.get("result_summary", {}))
@@ -460,7 +464,10 @@ def aggregate_summary_from_events(run_dir: Path, *, status_override: str | None 
     touched_paths: set[str] = set()
 
     model_requests = 0
+    model_request_completions = 0
     model_failures = 0
+    model_started_request_ids: set[str] = set()
+    model_terminal_request_ids: set[str] = set()
     tokens_input_total = 0
     tokens_output_total = 0
     saw_tokens_input = False
@@ -470,6 +477,7 @@ def aggregate_summary_from_events(run_dir: Path, *, status_override: str | None 
     saw_turn_events = False
     run_started_count = 0
     run_terminal_count = 0
+    patch_failed_event_tool_ids: set[str] = set()
 
     for event in events:
         event_type = str(event.get("event_type") or event.get("type") or "")
@@ -552,6 +560,9 @@ def aggregate_summary_from_events(run_dir: Path, *, status_override: str | None 
 
         if event_type == "file_patch_failed":
             patch_failed_count += 1
+            patch_tool_id = str(payload.get("tool_call_id", "")).strip()
+            if patch_tool_id:
+                patch_failed_event_tool_ids.add(patch_tool_id)
             path = normalize_repo_path(payload.get("file_path"), repo_root)
             if path:
                 touched_paths.add(path)
@@ -559,13 +570,33 @@ def aggregate_summary_from_events(run_dir: Path, *, status_override: str | None 
 
         if event_type == "model_request_started":
             model_requests += 1
+            request_id = str(payload.get("request_id", "")).strip()
+            if request_id:
+                if request_id in model_started_request_ids:
+                    validation_errors.append(f"duplicate model_request_started for request_id={request_id}")
+                model_started_request_ids.add(request_id)
             continue
 
         if event_type == "model_request_failed":
             model_failures += 1
+            request_id = str(payload.get("request_id", "")).strip()
+            if request_id:
+                if request_id not in model_started_request_ids:
+                    validation_errors.append(f"model_request_failed references unknown request_id={request_id}")
+                if request_id in model_terminal_request_ids:
+                    validation_errors.append(f"duplicate terminal model request event for request_id={request_id}")
+                model_terminal_request_ids.add(request_id)
             continue
 
         if event_type == "model_request_completed":
+            model_request_completions += 1
+            request_id = str(payload.get("request_id", "")).strip()
+            if request_id:
+                if request_id not in model_started_request_ids:
+                    validation_errors.append(f"model_request_completed references unknown request_id={request_id}")
+                if request_id in model_terminal_request_ids:
+                    validation_errors.append(f"duplicate terminal model request event for request_id={request_id}")
+                model_terminal_request_ids.add(request_id)
             in_tokens = _safe_int(payload.get("tokens_input"))
             out_tokens = _safe_int(payload.get("tokens_output"))
             if in_tokens is not None:
@@ -631,6 +662,10 @@ def aggregate_summary_from_events(run_dir: Path, *, status_override: str | None 
         validation_errors.append(f"expected exactly one canonical run_started event; found {run_started_count}.")
     if run_terminal_count != 1:
         validation_errors.append(f"expected exactly one canonical terminal run event; found {run_terminal_count}.")
+    if model_request_completions + model_failures > model_requests:
+        validation_errors.append(
+            "canonical model request terminal event count exceeds model_request_started count."
+        )
     if summary["tokens_input"] == 0 and any(
         isinstance((e.get("payload") or {}).get("tokens_input"), int) and (e.get("payload") or {}).get("tokens_input") > 0
         for e in events
@@ -677,6 +712,37 @@ def aggregate_summary_from_events(run_dir: Path, *, status_override: str | None 
             "canonical file events contain tool_call_id values without matching tool-call records: "
             + ", ".join(missing_file_tool_ids[:10])
         )
+
+    patch_tool_rows = {
+        str(row.get("tool_call_id", "")).strip(): row
+        for row in tool_rows
+        if str(row.get("tool_name", "")).strip().lower() == "patch"
+    }
+    failed_patch_tool_ids = {
+        tool_id
+        for tool_id, row in patch_tool_rows.items()
+        if str(row.get("status", "")).strip() == "failed"
+    }
+    missing_patch_failure_events = sorted(failed_patch_tool_ids - patch_failed_event_tool_ids)
+    if missing_patch_failure_events:
+        validation_errors.append(
+            "failed Patch tool-call rows missing canonical file_patch_failed events: "
+            + ", ".join(missing_patch_failure_events[:10])
+        )
+    non_patch_failure_event_ids = sorted(
+        tool_id
+        for tool_id in patch_failed_event_tool_ids
+        if tool_id not in patch_tool_rows
+    )
+    if non_patch_failure_event_ids:
+        validation_errors.append(
+            "file_patch_failed events reference tool_call_id values without matching Patch tool-call rows: "
+            + ", ".join(non_patch_failure_event_ids[:10])
+        )
+    if patch_applied_count != sum(1 for e in events if str(e.get("event_type", "")) == "file_patch_applied"):
+        validation_errors.append("summary total_file_patches_applied does not match canonical file_patch_applied events.")
+    if patch_failed_count != sum(1 for e in events if str(e.get("event_type", "")) == "file_patch_failed"):
+        validation_errors.append("summary total_file_patch_failures does not match canonical file_patch_failed events.")
 
     if warnings:
         summary["aggregation_warnings"] = warnings

@@ -238,3 +238,83 @@ def test_file_event_mapping_enforced(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="canonical file events contain tool_call_id values without matching tool-call records"):
         aggregate_summary_from_events(run_dir)
+
+
+def test_model_request_counts_align_and_no_duplicate_ids(tmp_path: Path) -> None:
+    run_dir, logger = _logger(tmp_path)
+    logger.emit("turn_started", {"message_count": 1}, turn_index=1)
+    logger.emit("model_request_started", {"request_id": "mr-1", "model": "demo", "message_count": 1}, turn_index=1)
+    logger.emit(
+        "model_request_completed",
+        {"request_id": "mr-1", "tokens_input": 3, "tokens_output": 2, "tokens_total": 5},
+        turn_index=1,
+    )
+    logger.emit("turn_finished", {"stop_reason": "end_turn"}, turn_index=1)
+    _finish_run(logger)
+
+    summary = aggregate_summary_from_events(run_dir)
+    assert summary["model_requests"] == 1
+    assert summary["model_failures"] == 0
+    assert summary["tokens_input"] == 3
+    assert summary["tokens_output"] == 2
+
+
+def test_duplicate_model_request_start_for_same_request_id_fails(tmp_path: Path) -> None:
+    run_dir, logger = _logger(tmp_path)
+    logger.emit("model_request_started", {"request_id": "mr-1"}, turn_index=1)
+    logger.emit("model_request_started", {"request_id": "mr-1"}, turn_index=1)
+    logger.emit("model_request_completed", {"request_id": "mr-1"}, turn_index=1)
+    _finish_run(logger)
+
+    with pytest.raises(ValueError, match="duplicate model_request_started"):
+        aggregate_summary_from_events(run_dir)
+
+
+def test_patch_failure_event_counts_and_patch_tool_mapping(tmp_path: Path) -> None:
+    run_dir, logger = _logger(tmp_path)
+    logger.emit("tool_call_started", {"tool_name": "Patch", "tool_call_id": "p-fail", "args": {"file_path": "a.py"}}, turn_index=1)
+    logger.emit(
+        "file_patch_failed",
+        {
+            "tool_call_id": "p-fail",
+            "file_path": "a.py",
+            "failure_reason": "hunk mismatch",
+            "hunks_attempted": 1,
+            "hunks_failed": 1,
+        },
+        turn_index=1,
+    )
+    logger.emit("tool_call_failed", {"tool_name": "Patch", "tool_call_id": "p-fail", "summary": "Patch failed"}, turn_index=1)
+    _finish_run(logger)
+
+    rows = build_tool_call_records_from_events(run_dir)[0]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["result_summary"]["kind"] == "file_patch_result"
+    assert rows[0]["result_summary"]["ok"] is False
+    summary = aggregate_summary_from_events(run_dir)
+    assert summary["tool_failures_by_name"]["Patch"] == 1
+    assert summary["total_file_patch_failures"] == 1
+    assert summary["total_file_patches_applied"] == 0
+
+
+def test_patch_success_counts_still_work(tmp_path: Path) -> None:
+    run_dir, logger = _logger(tmp_path)
+    logger.emit("tool_call_started", {"tool_name": "Patch", "tool_call_id": "p-ok", "args": {"file_path": "a.py"}}, turn_index=1)
+    logger.emit("file_patch_applied", {"tool_call_id": "p-ok", "file_path": "a.py"}, turn_index=1)
+    logger.emit("tool_call_completed", {"tool_name": "Patch", "tool_call_id": "p-ok", "summary": "ok"}, turn_index=1)
+    _finish_run(logger)
+
+    summary = aggregate_summary_from_events(run_dir)
+    assert summary["total_file_patches_applied"] == 1
+    assert summary["total_file_patch_failures"] == 0
+
+
+def test_failed_patch_tool_without_patch_failure_event_fails(tmp_path: Path) -> None:
+    run_dir, logger = _logger(tmp_path)
+    logger.emit("tool_call_started", {"tool_name": "Patch", "tool_call_id": "p-missing", "args": {"file_path": "a.py"}}, turn_index=1)
+    logger.emit("tool_call_failed", {"tool_name": "Patch", "tool_call_id": "p-missing", "summary": "Patch failed"}, turn_index=1)
+    _finish_run(logger)
+
+    with pytest.raises(ValueError, match="missing canonical file_patch_failed events"):
+        aggregate_summary_from_events(run_dir)
