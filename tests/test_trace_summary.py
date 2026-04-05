@@ -220,6 +220,44 @@ def test_rebuild_commands_generate_equivalent_outputs(tmp_path: Path) -> None:
     assert len(rows) == summary["total_tool_calls"]
 
 
+def test_artifact_manifest_marks_optional_absent_artifacts_honestly(tmp_path: Path) -> None:
+    run_dir, logger = _logger(tmp_path)
+    _finish_run(logger)
+    summary = aggregate_summary_from_events(run_dir)
+    validations = summary["artifacts"]["validations.jsonl"]
+    assert validations["optional"] is True
+    assert validations["exists"] is False
+    assert validations["state"] == "absent_optional"
+
+
+def test_summary_cleanliness_regression_keeps_core_counts_stable(tmp_path: Path) -> None:
+    run_dir, logger = _logger(tmp_path)
+    repo_dir = tmp_path / "repo-clean"
+    repo_dir.mkdir()
+    (run_dir / "session_meta.json").write_text(json.dumps({"repo": str(repo_dir)}), encoding="utf-8")
+
+    logger.emit("turn_started", {"message_count": 1}, turn_index=1)
+    logger.emit("tool_call_started", {"tool_name": "Write", "tool_call_id": "w1", "args": {"file_path": "src/a.py"}}, turn_index=1)
+    logger.emit("file_write", {"tool_call_id": "w1", "file_path": "src/a.py", "size_bytes": 5}, turn_index=1)
+    logger.emit("file_write", {"tool_call_id": "w1", "file_path": str((repo_dir / "src/a.py").resolve()), "size_bytes": 5}, turn_index=1)
+    logger.emit("tool_call_completed", {"tool_name": "Write", "tool_call_id": "w1", "summary": "ok"}, turn_index=1)
+    logger.emit("tool_call_started", {"tool_name": "Bash", "tool_call_id": "b1", "args": {"command": "pwd", "cwd": "."}}, turn_index=1)
+    logger.emit("command_started", {"tool_call_id": "b1", "command": "pwd", "cwd": "."}, turn_index=1)
+    logger.emit("command_finished", {"tool_call_id": "b1", "command": "pwd", "cwd": ".", "exit_code": 0, "stdout": "", "stderr": "", "truncated": False}, turn_index=1)
+    logger.emit("tool_call_completed", {"tool_name": "Bash", "tool_call_id": "b1", "exit_code": 0, "summary": "ok"}, turn_index=1)
+    logger.emit("turn_finished", {"stop_reason": "end_turn"}, turn_index=1)
+    _finish_run(logger)
+
+    summary = aggregate_summary_from_events(run_dir)
+    assert summary["turn_count"] == 1
+    assert summary["total_tool_calls"] == 2
+    assert summary["commands_executed"] == 1
+    assert summary["total_file_writes"] == 2
+    assert summary["unique_files_written"] == 1
+    assert "validation_errors" not in summary
+    assert summary["artifacts"]["validations.jsonl"]["state"] == "absent_optional"
+
+
 def test_duplicate_tool_lifecycle_fails_validation(tmp_path: Path) -> None:
     run_dir, logger = _logger(tmp_path)
     logger.emit("tool_call_started", {"tool_name": "Read", "tool_call_id": "t1", "args": {"file_path": "a.py"}}, turn_index=1)

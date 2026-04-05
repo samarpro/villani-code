@@ -1581,7 +1581,11 @@ class Runner:
             self._mission_state.changed_files = self._git_changed_files()
         save_mission_state(self.repo, self._mission_state)
         if self._debug_recorder is not None:
-            self._debug_recorder.record_mission_state_snapshot(self._mission_state.to_dict(), "mission_state_update")
+            self._debug_recorder.record_mission_state_snapshot(
+                self._mission_state.to_dict(),
+                "mission_state_update",
+                turn_index=self._current_turn_index if isinstance(self._current_turn_index, int) else None,
+            )
 
     def _inject_projected_context(self, messages: list[dict[str, Any]]) -> None:
         if not self._mission_state or self.benchmark_config.enabled:

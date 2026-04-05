@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from villani_code.debug_artifacts import DEBUG_JSONL_FILES
+
 AGGREGATION_VERSION = "v2"
 TOOL_CALL_SCHEMA_VERSION = "v1"
 SHELL_TOOL_NAMES = {"bash", "shell", "sh", "zsh", "ls"}
@@ -756,23 +758,18 @@ def aggregate_summary_from_events(run_dir: Path, *, status_override: str | None 
 def _build_artifact_manifest(run_dir: Path) -> dict[str, dict[str, Any]]:
     manifest: dict[str, dict[str, Any]] = {}
     optional_artifacts = {
+        *{name for key, name in DEBUG_JSONL_FILES.items() if key != "events"},
         "tool_calls.jsonl",
-        "approvals.jsonl",
-        "validations.jsonl",
-        "commands.jsonl",
-        "patches.jsonl",
-        "turns.jsonl",
-        "model_requests.jsonl",
-        "model_responses.jsonl",
-        "mission_state_snapshots.jsonl",
     }
     for name in ["events.jsonl", *sorted(optional_artifacts)]:
         path = run_dir / name
         exists = path.exists()
+        optional = name in optional_artifacts
         manifest[name] = {
             "path": str(path),
-            "optional": name in optional_artifacts,
+            "optional": optional,
             "exists": exists,
+            "state": "present" if exists else ("absent_optional" if optional else "absent_required"),
         }
     return manifest
 
@@ -809,6 +806,14 @@ def validate_summary(summary: dict[str, Any]) -> None:
                 validation_errors.append(f"Artifact {name} existence flag mismatch.")
             if present is False and exists:
                 validation_errors.append(f"Artifact {name} listed as present but file is missing.")
+        optional = bool(info.get("optional", False))
+        state = str(info.get("state", ""))
+        if optional and not exists and state != "absent_optional":
+            validation_errors.append(f"Artifact {name} must be marked absent_optional when missing.")
+        if exists and state != "present":
+            validation_errors.append(f"Artifact {name} must be marked present when file exists.")
+        if not optional and not exists:
+            validation_errors.append(f"Required artifact {name} is missing.")
 
     if validation_errors:
         raise ValueError("; ".join(validation_errors))
