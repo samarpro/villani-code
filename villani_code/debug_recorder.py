@@ -31,6 +31,8 @@ class DebugRecorder:
         self._event_logger = EventLogger(run_id=run_id, events_path=self._jsonl_paths["events"])
         self._tool_call_to_name: dict[str, str] = {}
         self._current_turn_index: int | None = None
+        self._model_request_seq = 0
+        self._pending_model_request_ids: list[str] = []
         self._safe_write_json(
             self.artifacts.path("session_meta.json"),
             {
@@ -95,20 +97,39 @@ class DebugRecorder:
 
     def record_model_request(self, payload: dict[str, Any]) -> None:
         data = payload if self.config.capture_model_io else {"model": payload.get("model"), "message_count": len(payload.get("messages", []))}
+        self._model_request_seq += 1
+        request_id = f"mr-{self._model_request_seq}"
+        self._pending_model_request_ids.append(request_id)
         self._safe_append_jsonl("model_requests", {"ts": self._ts(), "payload": data})
-        self._emit("model_request_started", {"model": payload.get("model"), "message_count": len(payload.get("messages", []))})
+        self._emit(
+            "model_request_started",
+            {"request_id": request_id, "model": payload.get("model"), "message_count": len(payload.get("messages", []))},
+        )
 
     def record_model_response(self, payload: dict[str, Any]) -> None:
         data = payload if self.config.capture_model_io else {"stop_reason": payload.get("stop_reason"), "content_blocks": len(payload.get("content", []))}
         self._safe_append_jsonl("model_responses", {"ts": self._ts(), "payload": data})
+        request_id = self._pending_model_request_ids.pop(0) if self._pending_model_request_ids else ""
         usage = normalize_token_usage(payload)
         self._emit(
             "model_request_completed",
             {
+                "request_id": request_id,
                 "stop_reason": payload.get("stop_reason"),
                 "tokens_input": usage.get("tokens_input"),
                 "tokens_output": usage.get("tokens_output"),
                 "tokens_total": usage.get("tokens_total"),
+            },
+        )
+
+    def record_model_request_failed(self, error: str) -> None:
+        request_id = self._pending_model_request_ids.pop(0) if self._pending_model_request_ids else ""
+        self._emit(
+            "model_request_failed",
+            {
+                "request_id": request_id,
+                "error_type": "model_request_error",
+                "error": {"message": str(error)},
             },
         )
 
@@ -277,14 +298,24 @@ class DebugRecorder:
         file_path: str,
         ok: bool = True,
         tool_call_id: str | None = None,
+        failure_reason: str = "",
+        hunks_attempted: Any | None = None,
+        hunks_failed: Any | None = None,
         turn_index: int | None = None,
     ) -> None:
         if file_path:
             self._changed_files.add(file_path)
         self._safe_append_jsonl("patches", {"ts": self._ts(), "file_path": file_path, "ok": ok})
+        payload = {"file_path": file_path, "ok": ok, "tool_call_id": tool_call_id or ""}
+        if failure_reason:
+            payload["failure_reason"] = failure_reason
+        if isinstance(hunks_attempted, int):
+            payload["hunks_attempted"] = hunks_attempted
+        if isinstance(hunks_failed, int):
+            payload["hunks_failed"] = hunks_failed
         self._emit(
             "file_patch_applied" if ok else "file_patch_failed",
-            {"file_path": file_path, "ok": ok, "tool_call_id": tool_call_id or ""},
+            payload,
             turn_index=turn_index,
         )
 
@@ -399,6 +430,8 @@ class DebugRecorder:
             )
             return
         if etype == "tool_finished":
+            return
+        if etype in {"model_request_started", "model_request_completed", "model_request_failed"}:
             return
         if etype == "approval_required":
             self.record_approval_requested(str(event.get("name", "")), dict(event.get("input", {})))

@@ -59,3 +59,40 @@ def test_trace_model_io_capture_vs_normal(tmp_path: Path) -> None:
     normal_row = json.loads((tmp_path / "n" / "model_requests.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert "messages" in trace_row["payload"]
     assert "message_count" in normal_row["payload"]
+
+
+def test_single_model_request_lifecycle_has_one_start_and_one_completion(tmp_path: Path) -> None:
+    recorder = DebugRecorder(build_debug_config("trace", tmp_path), "mr", "obj", tmp_path, "execution", "m")
+    recorder.record_turn_start(1, {"message_count": 1})
+    recorder.record_model_request({"model": "m", "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]})
+    recorder.record_model_response(
+        {
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 12, "output_tokens": 7, "total_tokens": 19},
+        }
+    )
+    recorder.record_turn_finish(1, "end_turn")
+    recorder.write_final_summary(status="completed", termination_reason="completed", total_turns=1, mission_id="m")
+
+    events = [json.loads(line) for line in (tmp_path / "mr" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    starts = [e for e in events if e["event_type"] == "model_request_started"]
+    terminals = [e for e in events if e["event_type"] in {"model_request_completed", "model_request_failed"}]
+    assert len(starts) == 1
+    assert len(terminals) == 1
+    assert starts[0]["turn_index"] == 1
+    assert terminals[0]["turn_index"] == 1
+    assert terminals[0]["payload"]["tokens_input"] == 12
+    assert terminals[0]["payload"]["tokens_output"] == 7
+
+
+def test_model_request_started_runner_event_is_not_double_recorded(tmp_path: Path) -> None:
+    recorder = DebugRecorder(build_debug_config("trace", tmp_path), "mr2", "obj", tmp_path, "execution", "m")
+    recorder.record_turn_start(1, {"message_count": 1})
+    recorder.record_model_request({"model": "m", "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]})
+    recorder.on_runner_event({"type": "model_request_started", "model": "m", "turn_index": 1})
+    recorder.record_model_response({"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"})
+    recorder.write_final_summary(status="completed", termination_reason="completed", total_turns=1, mission_id="m")
+
+    events = [json.loads(line) for line in (tmp_path / "mr2" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert sum(1 for e in events if e["event_type"] == "model_request_started") == 1

@@ -570,6 +570,9 @@ class Runner:
                 str(payload.get("file_path", "")),
                 bool(payload.get("ok", True)),
                 str(payload.get("tool_call_id", "") or ""),
+                failure_reason=str(payload.get("failure_reason", "") or ""),
+                hunks_attempted=payload.get("hunks_attempted"),
+                hunks_failed=payload.get("hunks_failed"),
                 turn_index=turn_index,
             )
             return
@@ -1077,16 +1080,22 @@ class Runner:
                 self._debug_recorder.write_working_context(json.dumps(turn_messages, indent=2, ensure_ascii=False) + "\n")
             self.event_callback({"type": "model_request_started", "model": self.model})
 
-            raw = self.client.create_message(payload, stream=self.stream)
-            if self.stream:
-                events = []
-                for event in raw:
-                    events.append(event)
-                    self._render_stream_event(event)
-                transcript["streamed_events_count"] += len(events)
-                response = assemble_anthropic_stream(events)
-            else:
-                response = raw
+            try:
+                raw = self.client.create_message(payload, stream=self.stream)
+                if self.stream:
+                    events = []
+                    for event in raw:
+                        events.append(event)
+                        self._render_stream_event(event)
+                    transcript["streamed_events_count"] += len(events)
+                    response = assemble_anthropic_stream(events)
+                else:
+                    response = raw
+            except Exception as exc:
+                if self._debug_recorder is not None:
+                    self._debug_recorder.record_model_request_failed(str(exc))
+                    self._debug_recorder.record_turn_finish(turns_used + 1, "model_request_failed")
+                raise
 
             response["content"] = normalize_content_blocks(response.get("content"))
             transcript["responses"].append(response)

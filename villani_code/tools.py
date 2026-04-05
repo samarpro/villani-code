@@ -11,7 +11,12 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from villani_code.patch_apply import PatchApplyError, apply_unified_diff_with_diagnostics
+from villani_code.patch_apply import (
+    PatchApplyError,
+    apply_unified_diff_with_diagnostics,
+    extract_unified_diff_targets,
+    parse_unified_diff,
+)
 
 
 class LsInput(BaseModel):
@@ -277,11 +282,34 @@ def _run_write(data: WriteInput, repo: Path, debug_callback: Any | None = None, 
 def _run_patch(data: PatchInput, repo: Path, debug_callback: Any | None = None, tool_call_id: str = "") -> str:
     if data.file_path:
         _safe_path(repo, data.file_path)
+    requested_paths: list[str] = []
+    hunks_attempted = 0
+    try:
+        parsed_patches = parse_unified_diff(data.unified_diff)
+        hunks_attempted = sum(len(file_patch.hunks) for file_patch in parsed_patches)
+        requested_paths = extract_unified_diff_targets(data.unified_diff, default_file_path=data.file_path or None)
+    except PatchApplyError:
+        if data.file_path:
+            requested_paths = [data.file_path]
     try:
         touched, diagnostics = apply_unified_diff_with_diagnostics(
             repo, data.unified_diff, default_file_path=data.file_path or None
         )
     except PatchApplyError as exc:
+        if callable(debug_callback):
+            target_paths = requested_paths or ([data.file_path] if data.file_path else [""])
+            for file_path in target_paths:
+                debug_callback(
+                    "patch_applied",
+                    {
+                        "file_path": file_path,
+                        "ok": False,
+                        "failure_reason": str(exc),
+                        "hunks_attempted": hunks_attempted or None,
+                        "hunks_failed": hunks_attempted or None,
+                        "tool_call_id": tool_call_id,
+                    },
+                )
         raise ValueError(str(exc)) from exc
     if callable(debug_callback):
         for file_path in touched:
