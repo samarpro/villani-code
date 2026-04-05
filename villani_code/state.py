@@ -531,18 +531,22 @@ class Runner:
         self._mission_dir: Path | None = None
         self._mission_state: MissionState | None = None
         self._event_recorder: RuntimeEventRecorder | None = None
+        self._current_turn_index: int | None = None
         if self.small_model:
             self._init_small_model_support()
 
     def _debug_tool_callback(self, event_type: str, payload: dict[str, Any]) -> None:
         if self._debug_recorder is None:
             return
+        callback_turn_index = payload.get("turn_index")
+        turn_index = callback_turn_index if isinstance(callback_turn_index, int) else self._current_turn_index
         if event_type == "file_read":
             self._debug_recorder.record_file_read(
                 str(payload.get("file_path", "")),
                 int(payload.get("size_bytes", 0)),
                 bool(payload.get("ok", True)),
                 str(payload.get("tool_call_id", "") or ""),
+                turn_index=turn_index,
             )
             return
         if event_type == "file_write":
@@ -551,6 +555,7 @@ class Runner:
                 int(payload.get("size_bytes", 0)),
                 bool(payload.get("ok", True)),
                 str(payload.get("tool_call_id", "") or ""),
+                turn_index=turn_index,
             )
             return
         if event_type == "patch_applied":
@@ -558,6 +563,7 @@ class Runner:
                 str(payload.get("file_path", "")),
                 bool(payload.get("ok", True)),
                 str(payload.get("tool_call_id", "") or ""),
+                turn_index=turn_index,
             )
             return
         if event_type == "command_started":
@@ -565,6 +571,7 @@ class Runner:
                 str(payload.get("command", "")),
                 str(payload.get("cwd", ".")),
                 str(payload.get("tool_call_id", "") or ""),
+                turn_index=turn_index,
             )
             return
         if event_type == "command_finished":
@@ -576,6 +583,7 @@ class Runner:
                 stderr=str(payload.get("stderr", "")),
                 truncated=bool(payload.get("truncated", False)),
                 tool_call_id=str(payload.get("tool_call_id", "") or ""),
+                turn_index=turn_index,
             )
 
 
@@ -824,6 +832,7 @@ class Runner:
                     "tool_use_id": forced_tool_use_id,
                     "is_error": forced_result["is_error"],
                     "forced": True,
+                    "turn_index": self._current_turn_index if isinstance(self._current_turn_index, int) else 0,
                 }
             )
             transcript["tool_invocations"].append(
@@ -839,6 +848,7 @@ class Runner:
                     "is_error": forced_result["is_error"],
                     "result": self._build_tool_result_event_payload("Read", forced_tool_use_id, forced_result),
                     "forced": True,
+                    "turn_index": self._current_turn_index if isinstance(self._current_turn_index, int) else 0,
                 }
             )
             messages.append({"role": "assistant", "content": [forced_tool_use]})
@@ -1049,6 +1059,7 @@ class Runner:
             return None
 
         while True:
+            self._current_turn_index = turns_used + 1
             self._live_stream_buffer = ""
             self._live_stream_started = False
             self._coalescer = StreamCoalescer()
@@ -1435,6 +1446,7 @@ class Runner:
                         "input": tool_input,
                         "tool_use_id": tool_use_id,
                         "is_error": result["is_error"],
+                        "turn_index": self._current_turn_index if isinstance(self._current_turn_index, int) else turns_used,
                     }
                 )
                 transcript["tool_invocations"].append(
@@ -1449,6 +1461,7 @@ class Runner:
                         "tool_use_id": tool_use_id,
                         "is_error": result["is_error"],
                         "result": self._build_tool_result_event_payload(tool_name, tool_use_id, result),
+                        "turn_index": self._current_turn_index if isinstance(self._current_turn_index, int) else turns_used,
                     }
                 )
                 tool_results.append(
@@ -1538,6 +1551,8 @@ class Runner:
         return False
 
     def _dispatch_event(self, event: dict[str, Any]) -> None:
+        if "turn_index" not in event and isinstance(self._current_turn_index, int):
+            event = {**event, "turn_index": self._current_turn_index}
         if self._event_recorder is not None:
             self._event_recorder.record(event)
         if self._debug_recorder is not None:
@@ -1628,7 +1643,7 @@ class Runner:
             "result_payload": content,
         }
         if payload["is_error"]:
-            payload["error"] = {"message": str(content)}
+            payload["error"] = {"error_type": "tool_error", "message": str(content)}
             return payload
         if tool_name == "Bash":
             try:
@@ -1641,6 +1656,35 @@ class Runner:
                 payload["stdout"] = decoded.get("stdout")
                 payload["stderr"] = decoded.get("stderr")
                 payload["result_payload"] = decoded
+        elif tool_name == "Read":
+            text_content = str(content)
+            payload["result_payload"] = {
+                "tool_use_id": tool_use_id,
+                "tool_call_id": tool_use_id,
+                "tool_name": tool_name,
+                "is_error": False,
+                "content": text_content,
+                "bytes_read": len(text_content.encode("utf-8", errors="replace")),
+                "preview": text_content[:240],
+            }
+        elif tool_name == "Write":
+            text_content = str(content)
+            payload["result_payload"] = {
+                "tool_use_id": tool_use_id,
+                "tool_call_id": tool_use_id,
+                "tool_name": tool_name,
+                "is_error": False,
+                "content": text_content,
+            }
+        elif tool_name == "Patch":
+            text_content = str(content)
+            payload["result_payload"] = {
+                "tool_use_id": tool_use_id,
+                "tool_call_id": tool_use_id,
+                "tool_name": tool_name,
+                "is_error": False,
+                "content": text_content,
+            }
         return payload
 
 

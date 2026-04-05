@@ -291,22 +291,10 @@ def build_tool_call_records_from_events(run_dir: Path) -> tuple[list[dict[str, A
             continue
 
     records: list[dict[str, Any]] = []
-    all_ids = sorted(set(started.keys()) | set(terminal_by_id.keys()))
+    all_ids = sorted(started.keys())
     for tool_call_id in all_ids:
         start = started.get(tool_call_id)
         terminal_event = terminal_by_id.get(tool_call_id)
-        if start is None and terminal_event is not None:
-            payload = terminal_event.get("payload") if isinstance(terminal_event.get("payload"), dict) else {}
-            warnings.append(f"terminal tool event without matching start: {tool_call_id}")
-            start = {
-                "tool_call_id": tool_call_id,
-                "run_id": str(terminal_event.get("run_id") or run_dir.name),
-                "turn_index": terminal_event.get("turn_index") if isinstance(terminal_event.get("turn_index"), int) else None,
-                "tool_name": _normalize_tool_name(payload.get("tool_name")),
-                "tool_category": _infer_tool_category(_normalize_tool_name(payload.get("tool_name"))),
-                "started_at": terminal_event.get("ts"),
-                "args": {},
-            }
         assert start is not None
         tool_name = _normalize_tool_name(start.get("tool_name"))
         args = start.get("args") if isinstance(start.get("args"), dict) else {}
@@ -321,8 +309,10 @@ def build_tool_call_records_from_events(run_dir: Path) -> tuple[list[dict[str, A
         duration_ms: int | None = None
         result_summary: dict[str, Any] = {"kind": "unterminated_tool_call", "warning": "missing terminal tool event"}
         error_value: dict[str, Any] | None = {"error_type": "missing_terminal_event", "message": "tool_call_started exists without terminal tool event"}
+        terminal_payload: dict[str, Any] = {}
         if terminal_event is not None:
             payload = terminal_event.get("payload") if isinstance(terminal_event.get("payload"), dict) else {}
+            terminal_payload = payload
             status = "failed" if str(terminal_event.get("event_type")) == "tool_call_failed" else "success"
             ended_at = terminal_event.get("ts")
             error_value = None
@@ -344,7 +334,7 @@ def build_tool_call_records_from_events(run_dir: Path) -> tuple[list[dict[str, A
         lowered = tool_name.lower()
         command_data = command_by_tool_id.get(tool_call_id, {})
         file_data = file_event_by_tool_id.get(tool_call_id, {})
-        if _is_shell_tool(tool_name):
+        if _is_shell_tool(tool_name) and command_data:
             result_summary = {
                 "kind": "command_result",
                 "command": _truncate(command_data.get("command") or args.get("command"), 240),
@@ -383,6 +373,11 @@ def build_tool_call_records_from_events(run_dir: Path) -> tuple[list[dict[str, A
                 "lines_removed": file_data.get("lines_removed"),
                 "failure_reason": file_data.get("failure_reason"),
             }
+        elif isinstance(terminal_payload.get("result_summary"), dict):
+            terminal_summary = dict(terminal_payload.get("result_summary", {}))
+            if "path" in terminal_summary:
+                terminal_summary["path"] = normalize_repo_path(terminal_summary.get("path"), repo_root)
+            result_summary = terminal_summary
 
         records.append(
             {
@@ -404,6 +399,13 @@ def build_tool_call_records_from_events(run_dir: Path) -> tuple[list[dict[str, A
         )
     if any(row.get("status") == "partial" for row in records):
         warnings.append("Unterminated tool calls detected.")
+
+    dangling_terminal_ids = sorted(set(terminal_by_id.keys()) - set(started.keys()))
+    if dangling_terminal_ids:
+        validation_errors.append(
+            "terminal tool events contain tool_call_id values without matching tool_call_started: "
+            + ", ".join(dangling_terminal_ids[:10])
+        )
 
     tool_ids = {str(row.get("tool_call_id", "")).strip() for row in records}
     bash_tool_ids = {str(row.get("tool_call_id", "")).strip() for row in records if _is_shell_tool(str(row.get("tool_name", "")))}

@@ -614,20 +614,32 @@ def execute_tool_with_policy(
                     runner._before_contents[normalized_target] = before_text
                     runner._current_verification_before_contents[normalized_target] = before_text
             runner.checkpoints.create(checkpoint_paths, message_index=message_count)
+    start_turn_index = runner._current_turn_index if isinstance(getattr(runner, "_current_turn_index", None), int) else 0
     runner.event_callback(
         {
             "type": "tool_started",
             "name": tool_name,
             "input": tool_input,
             "tool_use_id": tool_use_id,
+            "turn_index": start_turn_index,
         }
     )
+    runner_turn_index = start_turn_index
+
+    def _debug_callback_with_turn(event_type: str, payload: dict[str, Any]) -> None:
+        callback_payload = dict(payload)
+        if runner_turn_index is not None and not isinstance(callback_payload.get("turn_index"), int):
+            callback_payload["turn_index"] = runner_turn_index
+        debug_callback = getattr(runner, "_debug_tool_callback", None)
+        if callable(debug_callback):
+            debug_callback(event_type, callback_payload)
+
     result = execute_tool(
         tool_name,
         tool_input,
         runner.repo,
         unsafe=runner.unsafe,
-        debug_callback=getattr(runner, "_debug_tool_callback", None),
+        debug_callback=_debug_callback_with_turn,
         tool_call_id=tool_use_id,
     )
     return _benchmark_post_write_python_validation(runner, tool_name, tool_input, result)

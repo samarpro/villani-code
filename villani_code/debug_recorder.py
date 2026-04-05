@@ -11,6 +11,8 @@ from villani_code.debug_artifacts import DEBUG_JSONL_FILES, append_jsonl, append
 from villani_code.debug_mode import DebugConfig
 from villani_code.trace_summary import EventLogger, normalize_token_usage, write_summary_from_events, write_tool_calls_from_events
 
+_RESULT_PREVIEW_LIMIT = 240
+
 
 class DebugRecorder:
     def __init__(self, config: DebugConfig, run_id: str, objective: str, repo: Path, mode: str, model: str):
@@ -141,12 +143,13 @@ class DebugRecorder:
                     tool_call_id = known_id
                     break
         payload_data = result_payload if isinstance(result_payload, dict) else {}
+        result_summary = self._normalize_result_summary(name, payload_data, summary)
         payload = {
             "tool_name": name,
             "tool_call_id": tool_call_id,
             "summary": summary,
             "status": "failed" if is_error else "completed",
-            "result_summary": {"summary": summary},
+            "result_summary": result_summary,
             "result": payload_data,
         }
         if exit_code is not None:
@@ -160,8 +163,59 @@ class DebugRecorder:
         else:
             self._emit("tool_call_completed", payload, turn_index=turn_index)
 
-    def record_command_start(self, command: str, cwd: str, tool_call_id: str = "") -> None:
-        self.record_event("command_started", f"Command started: {command}", {"command": command, "cwd": cwd, "tool_call_id": tool_call_id})
+    def _normalize_result_summary(self, name: str, payload_data: dict[str, Any], summary: str) -> dict[str, Any]:
+        lowered = name.lower()
+        if lowered == "bash":
+            stdout = str(payload_data.get("stdout", ""))
+            stderr = str(payload_data.get("stderr", ""))
+            return {
+                "kind": "command_result",
+                "command": payload_data.get("command"),
+                "exit_code": payload_data.get("exit_code"),
+                "stdout_preview": stdout[:_RESULT_PREVIEW_LIMIT],
+                "stderr_preview": stderr[:_RESULT_PREVIEW_LIMIT],
+                "stdout_truncated": bool(payload_data.get("stdout_truncated", len(stdout) > _RESULT_PREVIEW_LIMIT)),
+                "stderr_truncated": bool(payload_data.get("stderr_truncated", len(stderr) > _RESULT_PREVIEW_LIMIT)),
+            }
+        if lowered == "read":
+            return {
+                "kind": "file_read_result",
+                "path": payload_data.get("file_path") or payload_data.get("path"),
+                "bytes_read": payload_data.get("size_bytes") or payload_data.get("bytes_read"),
+                "lines_read": payload_data.get("lines_read"),
+                "preview": str(payload_data.get("preview", ""))[:_RESULT_PREVIEW_LIMIT] if payload_data.get("preview") is not None else None,
+            }
+        if lowered == "write":
+            return {
+                "kind": "file_write_result",
+                "path": payload_data.get("file_path") or payload_data.get("path"),
+                "bytes_written": payload_data.get("size_bytes") or payload_data.get("bytes_written"),
+                "lines_written": payload_data.get("lines_written"),
+                "created": payload_data.get("created"),
+                "overwrote": payload_data.get("overwrote"),
+            }
+        if lowered == "patch":
+            return {
+                "kind": "file_patch_result",
+                "path": payload_data.get("file_path") or payload_data.get("path"),
+                "ok": not bool(payload_data.get("is_error", False)),
+                "bytes_delta": payload_data.get("bytes_delta"),
+                "lines_added": payload_data.get("lines_added"),
+                "lines_removed": payload_data.get("lines_removed"),
+                "failure_reason": payload_data.get("failure_reason"),
+            }
+        return {
+            "kind": "tool_result",
+            "summary": str(summary or payload_data.get("content", ""))[:_RESULT_PREVIEW_LIMIT],
+        }
+
+    def record_command_start(self, command: str, cwd: str, tool_call_id: str = "", turn_index: int | None = None) -> None:
+        self.record_event(
+            "command_started",
+            f"Command started: {command}",
+            {"command": command, "cwd": cwd, "tool_call_id": tool_call_id},
+            turn_index=turn_index,
+        )
 
     def record_command_finish(
         self,
@@ -172,6 +226,7 @@ class DebugRecorder:
         stderr: str = "",
         truncated: bool = False,
         tool_call_id: str = "",
+        turn_index: int | None = None,
     ) -> None:
         payload = {
             "ts": self._ts(),
@@ -184,30 +239,53 @@ class DebugRecorder:
             "tool_call_id": tool_call_id,
         }
         self._safe_append_jsonl("commands", payload)
-        self.record_event("command_finished", f"Command finished: {command}", payload)
+        self.record_event("command_finished", f"Command finished: {command}", payload, turn_index=turn_index)
         if exit_code != 0:
             self._last_failed_command = command
 
-    def record_file_read(self, file_path: str, size_bytes: int, ok: bool = True, tool_call_id: str | None = None) -> None:
+    def record_file_read(
+        self,
+        file_path: str,
+        size_bytes: int,
+        ok: bool = True,
+        tool_call_id: str | None = None,
+        turn_index: int | None = None,
+    ) -> None:
         self._emit(
             "file_read",
             {"file_path": file_path, "size_bytes": size_bytes, "ok": ok, "tool_call_id": tool_call_id or ""},
+            turn_index=turn_index,
         )
 
-    def record_file_write(self, file_path: str, size_bytes: int, ok: bool = True, tool_call_id: str | None = None) -> None:
+    def record_file_write(
+        self,
+        file_path: str,
+        size_bytes: int,
+        ok: bool = True,
+        tool_call_id: str | None = None,
+        turn_index: int | None = None,
+    ) -> None:
         self._changed_files.add(file_path)
         self._emit(
             "file_write",
             {"file_path": file_path, "size_bytes": size_bytes, "ok": ok, "tool_call_id": tool_call_id or ""},
+            turn_index=turn_index,
         )
 
-    def record_patch_applied(self, file_path: str, ok: bool = True, tool_call_id: str | None = None) -> None:
+    def record_patch_applied(
+        self,
+        file_path: str,
+        ok: bool = True,
+        tool_call_id: str | None = None,
+        turn_index: int | None = None,
+    ) -> None:
         if file_path:
             self._changed_files.add(file_path)
         self._safe_append_jsonl("patches", {"ts": self._ts(), "file_path": file_path, "ok": ok})
         self._emit(
             "file_patch_applied" if ok else "file_patch_failed",
             {"file_path": file_path, "ok": ok, "tool_call_id": tool_call_id or ""},
+            turn_index=turn_index,
         )
 
     def record_approval_requested(self, tool_name: str, payload: dict[str, Any]) -> None:
