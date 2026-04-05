@@ -9,7 +9,13 @@ from typing import Any
 
 from villani_code.debug_artifacts import DEBUG_JSONL_FILES, append_jsonl, append_text, create_debug_run_artifacts, write_json
 from villani_code.debug_mode import DebugConfig
-from villani_code.trace_summary import EventLogger, normalize_token_usage, write_summary_from_events, write_tool_calls_from_events
+from villani_code.trace_summary import (
+    EventLogger,
+    normalize_repo_path,
+    normalize_token_usage,
+    write_summary_from_events,
+    write_tool_calls_from_events,
+)
 
 _RESULT_PREVIEW_LIMIT = 240
 
@@ -46,6 +52,9 @@ class DebugRecorder:
             },
         )
         self._emit("run_started", {"objective": objective, "runtime_mode": mode, "model": model})
+
+    def _normalize_changed_path(self, file_path: str) -> str:
+        return normalize_repo_path(file_path, Path(self._repo))
 
     def _ts(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -286,7 +295,9 @@ class DebugRecorder:
         tool_call_id: str | None = None,
         turn_index: int | None = None,
     ) -> None:
-        self._changed_files.add(file_path)
+        normalized_path = self._normalize_changed_path(file_path)
+        if normalized_path:
+            self._changed_files.add(normalized_path)
         self._emit(
             "file_write",
             {"file_path": file_path, "size_bytes": size_bytes, "ok": ok, "tool_call_id": tool_call_id or ""},
@@ -303,8 +314,9 @@ class DebugRecorder:
         hunks_failed: Any | None = None,
         turn_index: int | None = None,
     ) -> None:
-        if file_path:
-            self._changed_files.add(file_path)
+        normalized_path = self._normalize_changed_path(file_path)
+        if normalized_path:
+            self._changed_files.add(normalized_path)
         self._safe_append_jsonl("patches", {"ts": self._ts(), "file_path": file_path, "ok": ok})
         payload = {"file_path": file_path, "ok": ok, "tool_call_id": tool_call_id or ""}
         if failure_reason:
@@ -319,15 +331,15 @@ class DebugRecorder:
             turn_index=turn_index,
         )
 
-    def record_approval_requested(self, tool_name: str, payload: dict[str, Any]) -> None:
+    def record_approval_requested(self, tool_name: str, payload: dict[str, Any], turn_index: int | None = None) -> None:
         row = {"ts": self._ts(), "tool_name": tool_name, "payload": payload}
         self._safe_append_jsonl("approvals", {**row, "state": "requested"})
-        self.record_event("approval_requested", f"Approval requested for {tool_name}", row)
+        self.record_event("approval_requested", f"Approval requested for {tool_name}", row, turn_index=turn_index)
 
-    def record_approval_resolved(self, tool_name: str, approved: bool, payload: dict[str, Any]) -> None:
+    def record_approval_resolved(self, tool_name: str, approved: bool, payload: dict[str, Any], turn_index: int | None = None) -> None:
         row = {"ts": self._ts(), "tool_name": tool_name, "approved": approved, "payload": payload}
         self._safe_append_jsonl("approvals", {**row, "state": "resolved"})
-        self.record_event("approval_resolved", f"Approval resolved for {tool_name}", row)
+        self.record_event("approval_resolved", f"Approval resolved for {tool_name}", row, turn_index=turn_index)
 
     def record_validation_start(self, kind: str, payload: dict[str, Any]) -> None:
         self._safe_append_jsonl("validations", {"ts": self._ts(), "state": "started", "kind": kind, "payload": payload})
@@ -343,12 +355,12 @@ class DebugRecorder:
     def record_context_compacted(self, payload: dict[str, Any]) -> None:
         self.record_event("context_compacted", "Context compacted", payload)
 
-    def record_mission_state_snapshot(self, mission_state: dict[str, Any], reason: str) -> None:
+    def record_mission_state_snapshot(self, mission_state: dict[str, Any], reason: str, turn_index: int | None = None) -> None:
         if not self.config.capture_mission_snapshots:
             return
         row = {"ts": self._ts(), "reason": reason, "mission_state": copy.deepcopy(mission_state)}
         self._safe_append_jsonl("mission_state_snapshots", row)
-        self.record_event("mission_state_updated", f"Mission state updated: {reason}", {"reason": reason})
+        self.record_event("mission_state_updated", f"Mission state updated: {reason}", {"reason": reason}, turn_index=turn_index)
 
     def record_subagent_start(self, objective: str, payload: dict[str, Any] | None = None) -> None:
         self.record_event("subagent_started", objective, payload or {})
@@ -434,10 +446,15 @@ class DebugRecorder:
         if etype in {"model_request_started", "model_request_completed", "model_request_failed"}:
             return
         if etype == "approval_required":
-            self.record_approval_requested(str(event.get("name", "")), dict(event.get("input", {})))
+            self.record_approval_requested(str(event.get("name", "")), dict(event.get("input", {})), turn_index=event_turn_index)
             return
         if etype in {"approval_resolved", "approval_auto_resolved"}:
-            self.record_approval_resolved(str(event.get("name", "")), bool(event.get("approved", True)), dict(event.get("input", {})))
+            self.record_approval_resolved(
+                str(event.get("name", "")),
+                bool(event.get("approved", True)),
+                dict(event.get("input", {})),
+                turn_index=event_turn_index,
+            )
             return
         if etype == "validation_started":
             self.record_validation_start("post_execution", event)

@@ -49,6 +49,22 @@ def test_recorder_writes_events_and_summary(tmp_path: Path) -> None:
     assert "a.py" in summary["changed_files"]
 
 
+def test_final_summary_changed_files_are_normalized_and_deduped(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    recorder = DebugRecorder(build_debug_config("trace", tmp_path), "norm", "obj", repo, "execution", "m")
+    recorder.record_turn_start(1, {"message_count": 1})
+    recorder.record_file_write("src/a.py", 10, True, turn_index=1)
+    recorder.record_patch_applied(str((repo / "src/a.py").resolve()), True, turn_index=1)
+    recorder.record_file_write("./src/a.py", 1, True, turn_index=1)
+    recorder.record_patch_applied("src/b.py", True, turn_index=1)
+    recorder.record_turn_finish(1, "end_turn")
+    summary_path = recorder.write_final_summary(status="completed", termination_reason="completed", total_turns=1, mission_id="m1")
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["changed_files"] == ["src/a.py", "src/b.py"]
+
+
 def test_trace_model_io_capture_vs_normal(tmp_path: Path) -> None:
     trace = DebugRecorder(build_debug_config("trace", tmp_path), "t", "obj", tmp_path, "execution", "m")
     trace.record_model_request({"model": "m", "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]})
@@ -96,3 +112,19 @@ def test_model_request_started_runner_event_is_not_double_recorded(tmp_path: Pat
 
     events = [json.loads(line) for line in (tmp_path / "mr2" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     assert sum(1 for e in events if e["event_type"] == "model_request_started") == 1
+
+
+def test_approval_event_records_turn_index_when_available(tmp_path: Path) -> None:
+    recorder = DebugRecorder(build_debug_config("trace", tmp_path), "approve", "obj", tmp_path, "execution", "m")
+    recorder.on_runner_event({"type": "approval_resolved", "name": "Write", "approved": True, "input": {"file_path": "a.py"}, "turn_index": 4})
+    events = [json.loads(line) for line in (tmp_path / "approve" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    approval = next(e for e in events if e["event_type"] == "approval_resolved")
+    assert approval["turn_index"] == 4
+
+
+def test_mission_state_event_records_turn_index_when_available(tmp_path: Path) -> None:
+    recorder = DebugRecorder(build_debug_config("trace", tmp_path), "mission", "obj", tmp_path, "execution", "m")
+    recorder.record_mission_state_snapshot({"status": "active"}, "mission_state_update", turn_index=3)
+    events = [json.loads(line) for line in (tmp_path / "mission" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    mission_event = next(e for e in events if e["event_type"] == "mission_state_updated")
+    assert mission_event["turn_index"] == 3
