@@ -1,8 +1,0 @@
-v=1
-goal=show_thinking_live_interactive
-files=villani_code/openai_client.py,villani_code/state_runtime.py,tests/test_openai_stream_to_anthropic_events.py,tests/test_openai_client.py,tests/test_runner_stream_events.py
-openai_client.py=add_extract_delta_text+extract_delta_thinking;map_reasoning->thinking_delta;dynamic_block_index;nonstream_reasoning->thinking_block
-state_runtime.py=render_stream_event emits thinking_delta to stream_text/print
-tests=cover_stream_reasoning_block;cover_nonstream_reasoning_map;cover_runner_thinking_delta_emit
-verify=pytest(11pass);ruff_changed(pass)
-notes=repo_has_preexisting_ruff_mypy_failures_unrelated
